@@ -29,3 +29,9 @@
    - 面试价值升级：「连表达式解释器都是自研的」比「用了 expr-eval」强一档——但必须能讲清为什么（库的 bug + AST 不可控 + 语法级沙箱）。
 
 7. **注入防护第一道防线落地**：INJECTION_PATTERNS 检测「忽略以上指令/ignore instructions」等模式。测试中发现初版英文正则在多修饰词场景（"all previous instructions"）漏检——正则是 `(all\s+|previous\s+)?` 只允许一个修饰词，改为 `((all|previous|above|following|other)\s+)*` 允许任意组合。教训：注入模式测试要用真实攻击文案变体。
+
+8. **与 RAG 项目的联动集成决策**（理论家要求两个项目一起使用）：
+   - 架构：RAG 项目 = 检索服务（新增独立端点 /api/retrieval，规则文档进 RAG 知识库）；Agent 项目 = 编排服务，「规则检索 MCP」通过 HTTP 调用 RAG 检索端点（RAG_API_BASE 环境变量，本地 http://localhost:3000）；
+   - 运行时：本地双 dev server 并行（RAG:3000 / Agent:3001），共享同一本地 Supabase；
+   - 理由：比 Agent 直连数据库更符合「复用项目一」的叙事，且与部署后的服务形态一致（两个服务各自部署，HTTP 互通）；
+   - 部署注意：两项目云端 Supabase 各自独立项目，检索服务与编排服务通过环境变量指向对方生产地址。
