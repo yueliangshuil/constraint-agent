@@ -24,7 +24,7 @@ export async function POST(request: Request, { params }: Params) {
   const db = getSupabaseAdmin();
   const { data: execution } = await db
     .from("executions")
-    .select("id, status, steps")
+    .select("id, task, status, steps")
     .eq("id", id)
     .single();
   if (!execution) {
