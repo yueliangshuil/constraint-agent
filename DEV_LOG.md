@@ -58,3 +58,15 @@
     - 教训：ReadableStream 的 desiredSize 是给生产者做背压用的，连续 emit 场景下会误伤；事件完整性用 done 事件 + 序号校验兜底。
 
 12. **演示时间模拟器**：时间类约束依赖服务器时钟，演示/评测不可控。任务输入增加 hourOverride（0-23）字段，UI 提供模拟时间控件——评测集可复现（P3 依赖此设计）。
+
+## 2026-09-23 · P2：裁决面板与审计回放
+
+13. **执行持久化与裁决闭环**：
+    - executions 行在执行开始时创建（status=running + 上下文快照），每个终态路径统一走 finalize() 更新状态/步骤/结论——避免各 return 路径遗漏落库；
+    - 审计事件（recordAudit）与工具步骤统一进 steps jsonb（audit 工具不暴露给模型，应用侧自动记录——模型无法选择性记录，审计可信）；
+    - 冲突快照存入 steps 的 conflict 条目（含两侧规则完整信息），裁决 API 直接从 steps 提取——避免客户端回传数据造成的不一致（服务端数据是唯一事实源）；
+    - 裁决 API 校验状态机：仅 conflict 状态可裁决，防重复裁决；
+    - 前端：decision_request 事件触发裁决弹窗（禁止侧/豁免侧并排展示 + 裁决人输入），历史列表可展开回放步骤。
+    - E2E 验证：冲突场景 → execution(conflict) → 裁决 allow 落 decisions → 详情含裁决记录。
+
+14. **规则版本化（RAG 项目迁移 006）**：documents 加 version/is_latest；同名同内容跳过、同名不同内容 → 新版本插入旧版置非最新；match_chunks/hybrid_search 通过 join documents 过滤 is_latest——规则变更全程可追溯，检索永远命中最新规则。

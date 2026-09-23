@@ -7,11 +7,12 @@
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import { z } from "zod";
 import { getChatModel } from "./llm";
+import { getSupabaseAdmin } from "./supabase";
 import { evaluateConstraints } from "./rule-engine";
 import { structurizeRules } from "./structurize";
 import { connectMcpServer, callMcpTool, toOpenAIToolDefs } from "./mcp/client";
 import { createAllServers } from "./mcp/servers";
-import type { Constraint, ExecContext } from "@/types/constraint";
+import type { ExecContext } from "@/types/constraint";
 
 export interface AgentEvent {
   type:
@@ -22,6 +23,7 @@ export interface AgentEvent {
     | "tool_call"
     | "tool_result"
     | "decision_request"
+    | "execution"
     | "done";
   data: Record<string, unknown>;
 }
@@ -85,10 +87,55 @@ export async function runAgent(
     approvedByDirector: input.approvedByDirector,
   };
 
-  const audit: { action: string; detail: string; result: string }[] = [];
   const recordAudit = async (r: { action: string; detail: string; result: string }) => {
-    audit.push(r);
+    steps.push({ kind: "audit", ...r });
     emit({ type: "tool_result", data: { kind: "audit", ...r } });
+  };
+
+  const steps: Record<string, unknown>[] = [];
+
+  // 执行记录持久化（审计可回放）
+  const db = getSupabaseAdmin();
+  const { data: execRow } = await db
+    .from("executions")
+    .insert({
+      task: input.task,
+      context: {
+        role: input.role,
+        env: input.env,
+        isEmergency: input.isEmergency,
+        hasTicket: input.hasTicket,
+        approvedByDirector: input.approvedByDirector,
+        quotaUsed: input.quotaUsed,
+        hour: hour,
+        weekday: now.getDay() === 0 ? 7 : now.getDay(),
+        isWorkday: now.getDay() >= 1 && now.getDay() <= 5,
+      },
+      status: "running",
+      steps: [],
+    })
+    .select()
+    .single();
+  const executionId = execRow?.id as string | undefined;
+  if (executionId) {
+    emit({ type: "execution", data: { id: executionId } });
+  }
+  const finalize = async (
+    status: "completed" | "blocked" | "conflict" | "cancelled",
+    conclusion: string
+  ): Promise<AgentResult> => {
+    if (executionId) {
+      await db
+        .from("executions")
+        .update({
+          status,
+          steps: steps as never,
+          finished_at: new Date().toISOString(),
+          plan: { conclusion } as never,
+        })
+        .eq("id", executionId);
+    }
+    return { status, conclusion, steps };
   };
 
   emit({ type: "plan", data: { task: input.task } });
@@ -114,7 +161,7 @@ export async function runAgent(
   } catch (err) {
     const reason = err instanceof Error ? err.message : "规则检索失败";
     await recordAudit({ action: "search_rules", detail: reason, result: "block" });
-    return { status: "blocked", conclusion: `规则检索失败，保守拦截：${reason}`, steps: audit };
+    return finalize("blocked", `规则检索失败，保守拦截：${reason}`);
   }
 
   // fail-closed：召回质量不足 → 保守拦截（宁拦勿放）
@@ -122,7 +169,7 @@ export async function runAgent(
     const msg = `未匹配到明确约束（最高相似度 ${maxSimilarity.toFixed(3)} < ${SIMILARITY_FLOOR}），按 fail-closed 策略保守拦截，需人工确认。`;
     await recordAudit({ action: "constraint_recall", detail: msg, result: "block" });
     emit({ type: "done", data: { conclusion: msg } });
-    return { status: "blocked", conclusion: msg, steps: audit };
+    return finalize("blocked", msg);
   }
 
   // ---------- 3. 约束结构化（LLM + Zod + 白名单） ----------
@@ -135,7 +182,7 @@ export async function runAgent(
   if (invalid.length > 0) {
     const msg = `约束结构化失败（${invalid.map((i) => i.ruleName).join("、")}），保守拦截需人工复核。`;
     await recordAudit({ action: "structurize", detail: msg, result: "block" });
-    return { status: "blocked", conclusion: msg, steps: audit };
+    return finalize("blocked", msg);
   }
 
   // ---------- 4. 手写 ReAct 循环 ----------
@@ -163,12 +210,11 @@ export async function runAgent(
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const messages: any[] = [new SystemMessage(systemPrompt), new HumanMessage(input.task)];
-  const steps: unknown[] = [];
   emit({ type: "stage", data: { stage: "planning" } });
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
     if (signal?.aborted) {
-      return { status: "cancelled", conclusion: "任务已取消", steps };
+      return finalize("cancelled", "任务已取消");
     }
     const response = await model.invoke(messages);
     messages.push(new AIMessage(response as never));
@@ -185,7 +231,7 @@ export async function runAgent(
           ? response.content
           : JSON.stringify(response.content);
       emit({ type: "done", data: { conclusion } });
-      return { status: "completed", conclusion, steps };
+      return finalize("completed", conclusion);
     }
 
     for (const tc of toolCalls) {
@@ -262,13 +308,19 @@ export async function runAgent(
           },
         });
         const msg = "检测到同优先级约束冲突，任务暂停，等待人工裁决。";
+        steps.push({
+          kind: "conflict",
+          tool: tc.name,
+          blockers: decision.blockers.map((b) => b.constraint),
+          exemptions: decision.exemptions.map((e) => e.constraint),
+        });
         await recordAudit({ action: tc.name, detail: msg, result: "conflict" });
-        return { status: "conflict", conclusion: msg, steps };
+        return finalize("conflict", msg);
       }
     }
   }
 
   const msg = `达到最大轮数（${MAX_ROUNDS}），任务强制终止。`;
   emit({ type: "done", data: { conclusion: msg } });
-  return { status: "blocked", conclusion: msg, steps };
+  return finalize("blocked", msg);
 }

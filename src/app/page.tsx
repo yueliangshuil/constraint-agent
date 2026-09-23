@@ -1,9 +1,9 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { parseSSEBlock } from "@/lib/sse";
 
-/** 任务场景输入（含上下文：角色/环境/紧急标记等——表达式变量来源之一） */
+/** 任务场景输入 */
 interface ScenarioInput {
   task: string;
   role: "intern" | "junior" | "senior" | "lead" | "director";
@@ -21,6 +21,21 @@ interface TraceEvent {
   data: Record<string, unknown>;
 }
 
+interface ExecutionRow {
+  id: string;
+  task: string;
+  status: string;
+  created_at: string;
+  steps: Record<string, unknown>[];
+  plan: { conclusion?: string } | null;
+}
+
+interface ConflictInfo {
+  executionId: string;
+  blockers: { ruleName: string; sourceChunk: string }[];
+  exemptions: { ruleName: string; sourceChunk: string }[];
+}
+
 export default function Home() {
   const [input, setInput] = useState<ScenarioInput>({
     task: "",
@@ -34,13 +49,33 @@ export default function Home() {
   const [events, setEvents] = useState<TraceEvent[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [executions, setExecutions] = useState<ExecutionRow[]>([]);
+  const [selectedExec, setSelectedExec] = useState<ExecutionRow | null>(null);
+  const [conflict, setConflict] = useState<ConflictInfo | null>(null);
+  const [decidedBy, setDecidedBy] = useState("");
+  const [deciding, setDeciding] = useState(false);
   const ctrlRef = useRef<AbortController | null>(null);
+  const execIdRef = useRef<string | null>(null);
+
+  const loadExecutions = useCallback(async () => {
+    const res = await fetch("/api/executions");
+    if (res.ok) {
+      const data = await res.json();
+      setExecutions(data.executions);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadExecutions();
+  }, [loadExecutions]);
 
   const execute = async () => {
     if (running || !input.task.trim()) return;
     setRunning(true);
     setError(null);
     setEvents([]);
+    setConflict(null);
+    execIdRef.current = null;
     const ctrl = new AbortController();
     ctrlRef.current = ctrl;
     try {
@@ -67,10 +102,17 @@ export default function Home() {
           buffer = buffer.slice(sep + 2);
           const ev = parseSSEBlock(block);
           if (!ev) continue;
-          setEvents((prev) => [
-            ...prev,
-            { id: ev.id, type: ev.event, data: safeParse(ev.data) },
-          ]);
+          const data = safeParse(ev.data);
+          if (ev.event === "execution") {
+            execIdRef.current = String(data.id ?? "");
+          } else if (ev.event === "decision_request") {
+            setConflict({
+              executionId: execIdRef.current ?? "",
+              blockers: (data.blockers ?? []) as ConflictInfo["blockers"],
+              exemptions: (data.exemptions ?? []) as ConflictInfo["exemptions"],
+            });
+          }
+          setEvents((prev) => [...prev, { id: ev.id, type: ev.event, data }]);
         }
       }
     } catch (e) {
@@ -79,18 +121,42 @@ export default function Home() {
       }
     } finally {
       setRunning(false);
+      loadExecutions();
     }
   };
 
   const cancel = () => ctrlRef.current?.abort();
 
+  const decide = async (decision: "allow" | "block") => {
+    if (!conflict || deciding) return;
+    setDeciding(true);
+    try {
+      const res = await fetch(`/api/executions/${conflict.executionId}/decide`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision, decidedBy: decidedBy || undefined }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error ?? "裁决提交失败");
+      }
+      setConflict(null);
+      setDecidedBy("");
+      loadExecutions();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "裁决提交失败");
+    } finally {
+      setDeciding(false);
+    }
+  };
+
   return (
     <div className="flex h-screen overflow-hidden bg-zinc-50 font-sans dark:bg-zinc-950">
-      {/* 左侧：场景输入 */}
+      {/* 左侧：场景输入 + 执行历史 */}
       <aside className="flex w-96 shrink-0 flex-col gap-4 overflow-y-auto border-r border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
         <h1 className="text-sm font-semibold">约束感知规划 Agent</h1>
         <p className="text-xs text-zinc-400">
-          业务规则托管于 RAG 知识库（上传规则文档到 RAG 项目），工具调用前经规则引擎校验。
+          业务规则托管于 RAG 知识库（上传规则文档到 RAG 项目 localhost:3000），工具调用前经规则引擎校验。
         </p>
 
         <label className="flex flex-col gap-1 text-xs">
@@ -140,7 +206,7 @@ export default function Home() {
             />
           </label>
           <label className="flex flex-col gap-1">
-            模拟时间（时，留空=真实时钟）
+            模拟时间（时，留空=真实）
             <input
               type="number"
               min={0}
@@ -192,9 +258,45 @@ export default function Home() {
           )}
         </div>
 
-        <p className="text-xs text-zinc-400">
-          规则文档上传：打开 RAG 项目（localhost:3000）上传 docs/rules 下的规则文档。
-        </p>
+        {/* 执行历史 */}
+        <div className="mt-2 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+          <p className="mb-2 text-xs text-zinc-400">执行历史（{executions.length}）</p>
+          <ul className="space-y-1">
+            {executions.map((ex) => (
+              <li key={ex.id}>
+                <button
+                  onClick={() => setSelectedExec(selectedExec?.id === ex.id ? null : ex)}
+                  className={`w-full truncate rounded-lg px-2 py-1.5 text-left text-xs ${
+                    selectedExec?.id === ex.id ? "bg-zinc-100 dark:bg-zinc-800" : "hover:bg-zinc-50 dark:hover:bg-zinc-800/60"
+                  }`}
+                >
+                  <span className={STATUS_COLORS[ex.status] ?? ""}>{STATUS_LABELS[ex.status] ?? ex.status}</span>{" "}
+                  {ex.task.slice(0, 24)}
+                </button>
+                {selectedExec?.id === ex.id && (
+                  <div className="mt-1 rounded-lg bg-zinc-50 p-2 text-xs dark:bg-zinc-800/60">
+                    <p className="mb-1 text-zinc-400">创建：{new Date(ex.created_at).toLocaleString()}</p>
+                    {ex.steps.map((s, i) => (
+                      <p key={i} className="text-zinc-500">
+                        {s.kind === "audit"
+                          ? `· 审计[${String(s.result)}] ${String(s.detail).slice(0, 60)}`
+                          : s.kind === "conflict"
+                            ? "· ⚠ 冲突（待裁决）"
+                            : `· 工具 ${String(s.tool)} → ${String(s.verdict)}`}
+                      </p>
+                    ))}
+                    {ex.plan?.conclusion && (
+                      <p className="mt-1 border-t border-zinc-200 pt-1 text-zinc-500 dark:border-zinc-700">
+                        结论：{ex.plan.conclusion.slice(0, 80)}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </li>
+            ))}
+            {executions.length === 0 && <li className="text-xs text-zinc-400">暂无执行记录</li>}
+          </ul>
+        </div>
       </aside>
 
       {/* 右侧：链路可视化 */}
@@ -221,9 +323,72 @@ export default function Home() {
           )}
         </div>
       </main>
+
+      {/* 冲突裁决面板 */}
+      {conflict && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl dark:bg-zinc-900">
+            <h2 className="mb-1 text-base font-semibold text-amber-600">⚠ 约束冲突 · 人工裁决</h2>
+            <p className="mb-4 text-xs text-zinc-400">同优先级约束结论相反，系统不自动裁决（工程取舍）</p>
+            <div className="mb-4 space-y-3 text-sm">
+              <div className="rounded-lg bg-red-50 p-3 dark:bg-red-950/30">
+                <p className="mb-1 text-xs font-medium text-red-600">禁止侧</p>
+                {conflict.blockers.map((b, i) => (
+                  <p key={i} className="text-xs">「{b.ruleName}」{b.sourceChunk}</p>
+                ))}
+              </div>
+              <div className="rounded-lg bg-green-50 p-3 dark:bg-green-950/30">
+                <p className="mb-1 text-xs font-medium text-green-600">豁免侧</p>
+                {conflict.exemptions.map((e, i) => (
+                  <p key={i} className="text-xs">「{e.ruleName}」{e.sourceChunk}</p>
+                ))}
+              </div>
+            </div>
+            <label className="mb-4 flex flex-col gap-1 text-xs">
+              裁决人
+              <input
+                value={decidedBy}
+                onChange={(e) => setDecidedBy(e.target.value)}
+                placeholder="输入姓名（记录到审计）"
+                className="rounded-lg border border-zinc-300 px-3 py-2 dark:border-zinc-700 dark:bg-zinc-800"
+              />
+            </label>
+            <div className="flex gap-3">
+              <button
+                onClick={() => decide("allow")}
+                disabled={deciding}
+                className="flex-1 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+              >
+                放行（allow）
+              </button>
+              <button
+                onClick={() => decide("block")}
+                disabled={deciding}
+                className="flex-1 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+              >
+                拦截（block）
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
+const STATUS_LABELS: Record<string, string> = {
+  running: "🔄",
+  completed: "✅",
+  blocked: "🚫",
+  conflict: "⚠️",
+  cancelled: "⏹",
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  completed: "text-green-600",
+  blocked: "text-red-600",
+  conflict: "text-amber-600",
+};
 
 function safeParse(raw: string): Record<string, unknown> {
   try {
@@ -314,12 +479,12 @@ function EventBody({ type, data }: { type: string; data: Record<string, unknown>
   if (type === "decision_request") {
     return (
       <div className="text-sm">
-        <p className="font-medium text-amber-600">同优先级约束冲突，暂停执行，等待人工裁决：</p>
-        {(data.blockers as { ruleName: string; sourceChunk: string }[] | undefined)?.map((b, i) => (
-          <p key={`b${i}`} className="text-xs">禁止侧：「{b.ruleName}」{b.sourceChunk}</p>
+        <p className="font-medium text-amber-600">同优先级约束冲突，暂停执行，请在弹窗中裁决</p>
+        {(data.blockers as { ruleName: string }[] | undefined)?.map((b, i) => (
+          <p key={`b${i}`} className="text-xs">禁止侧：「{b.ruleName}」</p>
         ))}
-        {(data.exemptions as { ruleName: string; sourceChunk: string }[] | undefined)?.map((e, i) => (
-          <p key={`e${i}`} className="text-xs">豁免侧：「{e.ruleName}」{e.sourceChunk}</p>
+        {(data.exemptions as { ruleName: string }[] | undefined)?.map((e, i) => (
+          <p key={`e${i}`} className="text-xs">豁免侧：「{e.ruleName}」</p>
         ))}
       </div>
     );
