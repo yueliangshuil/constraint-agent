@@ -12,6 +12,7 @@ import { evaluateConstraints } from "./rule-engine";
 import { structurizeRules } from "./structurize";
 import { connectMcpServer, callMcpTool, toOpenAIToolDefs } from "./mcp/client";
 import { createAllServers } from "./mcp/servers";
+import { bindSystemArgs } from "./agent-helpers";
 import type { ExecContext } from "@/types/constraint";
 
 export interface AgentEvent {
@@ -55,7 +56,8 @@ const SIMILARITY_FLOOR = 0.5; // fail-closed：召回相似度低于阈值 → �
 const TOOL_SCHEMAS: Record<string, z.ZodTypeAny> = {
   deploy_service: z.object({
     service: z.string().min(1),
-    env: z.enum(["prod", "staging"]),
+    // env 由系统绑定（bindSystemArgs 注入场景环境），模型传值仅作校验
+    env: z.enum(["prod", "staging"]).optional(),
     version: z.string().min(1),
   }),
   create_change_ticket: z.object({
@@ -263,12 +265,23 @@ export async function runAgent(
         continue;
       }
 
-      // 2b. 组装执行上下文 → 规则引擎判定（硬门槛）
-      const args = parsedArgs.data as { env?: "prod" | "staging" };
+      // 2b. 系统参数绑定：关键参数（env）由任务场景决定，模型不可自由指定
+      const rawArgs = parsedArgs.data as { env?: "prod" | "staging" };
+      const bind = bindSystemArgs(tc.name, rawArgs as Record<string, unknown>, ctxBase.env);
+      if (bind.violation) {
+        blockedAny = true;
+        steps.push({ tool: tc.name, args: rawArgs, verdict: "block", violated: bind.violation });
+        await recordAudit({ action: tc.name, detail: bind.violation, result: "block" });
+        messages.push(new ToolMessage({ tool_call_id: tc.id, content: bind.violation + "，请重新规划。" }));
+        continue;
+      }
+      const args = bind.args as { env?: "prod" | "staging" };
+
+      // 2c. 组装执行上下文 → 规则引擎判定（硬门槛）
       const ctx: ExecContext = {
         ...ctxBase,
         action: tc.name as ExecContext["action"],
-        env: args.env ?? ctxBase.env,
+        env: ctxBase.env, // 校验环境永远取场景值，与模型声称无关
       };
       const decision = evaluateConstraints(constraints, ctx);
       emit({
