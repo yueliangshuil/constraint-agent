@@ -18,3 +18,14 @@
    - Agent 循环手写（非 LangChain AgentExecutor）：校验门槛必须内嵌在循环里，框架黑盒做不到。
 
 5. **复用 RAG 项目清单**：本地 Supabase 栈与迁移模式、bigram 分词器、SSE 协议（encodeSSE/parseSSEBlock）、防抖节流、Markdown 流式渲染、AbortController 管控、评测方法论（诚实规模标注）。
+
+## 2026-09-23 · P1 开发
+
+6. **expr-eval 库存在优先级 bug，改为自研表达式解释器**（核心难点）：
+   - 实测 expr-eval@2.0.2（npm 最新版，8 年未更新）：`hour >= 22 || hour < 6` 在 hour=14 时求值为 **true**（应为 false）——`||` 与比较运算符的优先级处理有 bug，规则引擎的判定会直接错误；
+   - 其 AST 是扁平 token 流而非节点树，无法可靠提取标识符做白名单校验；
+   - **决策：自研轻量布尔表达式解释器**（src/lib/expression.ts，约 180 行）：词法分析 + 递归下降 + AST 求值。理由：语法层面只实现布尔逻辑所需最小集合（&& || ! 比较 括号 字面量 标识符），函数调用/赋值不存在于语法中 → 注入风险为零（语法级沙箱）；AST 可控 → 标识符白名单直接遍历节点；词法/语法错误显式抛出 → fail-closed；
+   - 测试：24 条单测全绿（解释器 10 条 + 规则引擎 14 条），覆盖优先级、短路、字符串比较、未声明变量、非法表达式、豁免覆盖、同优先级冲突、注入检测；
+   - 面试价值升级：「连表达式解释器都是自研的」比「用了 expr-eval」强一档——但必须能讲清为什么（库的 bug + AST 不可控 + 语法级沙箱）。
+
+7. **注入防护第一道防线落地**：INJECTION_PATTERNS 检测「忽略以上指令/ignore instructions」等模式。测试中发现初版英文正则在多修饰词场景（"all previous instructions"）漏检——正则是 `(all\s+|previous\s+)?` 只允许一个修饰词，改为 `((all|previous|above|following|other)\s+)*` 允许任意组合。教训：注入模式测试要用真实攻击文案变体。
