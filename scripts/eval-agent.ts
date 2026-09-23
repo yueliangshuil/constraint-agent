@@ -67,7 +67,7 @@ interface Scenario {
   id: string;
   name: string;
   category: "合规" | "时间违规" | "权限违规" | "配额违规" | "工单前置" | "配额查询" | "冲突";
-  ctx: Partial<ExecContext> & { action: ExecContext["action"] };
+  ctx: Partial<ExecContext>;
   expected: "pass" | "block" | "conflict";
 }
 
@@ -78,7 +78,7 @@ const BASE: ExecContext = {
   isEmergency: false, hasTicket: true, approvedByDirector: false,
 };
 
-function s(id: string, name: string, category: Scenario["category"], ctx: Partial<ExecContext> & { action: ExecContext["action"] }, expected: Scenario["expected"]): Scenario {
+function s(id: string, name: string, category: Scenario["category"], ctx: Partial<ExecContext>, expected: Scenario["expected"]): Scenario {
   return { id, name, category, ctx, expected };
 }
 
