@@ -248,26 +248,23 @@ function evalNode(node: ExprNode, ctx: Record<string, unknown>): unknown {
         case "!=":
           return left !== right;
         case ">":
-          assertNumber(left, right);
-          return left > right;
+          return asNumbers(left, right)[0] > asNumbers(left, right)[1];
         case ">=":
-          assertNumber(left, right);
-          return left >= right;
+          return asNumbers(left, right)[0] >= asNumbers(left, right)[1];
         case "<":
-          assertNumber(left, right);
-          return left < right;
+          return asNumbers(left, right)[0] < asNumbers(left, right)[1];
         case "<=":
-          assertNumber(left, right);
-          return left <= right;
+          return asNumbers(left, right)[0] <= asNumbers(left, right)[1];
       }
     }
   }
 }
 
-function assertNumber(a: unknown, b: unknown): asserts a is number {
+function asNumbers(a: unknown, b: unknown): [number, number] {
   if (typeof a !== "number" || typeof b !== "number") {
     throw new Error(`比较运算需要数字（${typeof a} vs ${typeof b}）`);
   }
+  return [a, b];
 }
 
 /** 提取表达式中的全部标识符（白名单校验用） */
