@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSupabaseAdmin } from "@/lib/supabase";
+import { getEnv } from "@/lib/env";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -49,6 +50,42 @@ export async function POST(request: Request, { params }: Params) {
     .single();
   if (error || !decision) {
     return NextResponse.json({ error: error?.message ?? "裁决记录失败" }, { status: 500 });
+  }
+
+  // 4. 裁决案例回写知识库（经验自适应：同类冲突下次可检索到先例）
+  // 失败不阻塞裁决主流程（审计记录失败原因）
+  try {
+    const conflictData = (conflictStep as Record<string, unknown> | undefined) ?? {};
+    const blockers = (conflictData.blockers ?? []) as { ruleName: string }[];
+    const exemptions = (conflictData.exemptions ?? []) as { ruleName: string }[];
+    const caseDoc = [
+      "# 裁决案例",
+      `- 任务：${execution.task}`,
+      `- 冲突工具：${String(conflictData.tool ?? "未知")}`,
+      `- 禁止侧：${blockers.map((b) => b.ruleName).join("、") || "无"}`,
+      `- 豁免侧：${exemptions.map((e) => e.ruleName).join("、") || "无"}`,
+      `- 裁决结果：${parsed.data.decision === "allow" ? "放行" : "拦截"}`,
+      `- 裁决人：${parsed.data.decidedBy ?? "未署名"}`,
+      `- 裁决时间：${new Date().toISOString()}`,
+      "",
+      "本案例作为同类约束冲突的裁决先例，供后续任务参考。",
+    ].join("\n");
+    const formData = new FormData();
+    formData.append(
+      "file",
+      new File([caseDoc], `decision-case-${Date.now()}.md`, { type: "text/markdown" })
+    );
+    const upRes = await fetch(`${getEnv("RAG_API_BASE")}/api/documents`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!upRes.ok) {
+      console.warn(`[decide] 案例回写知识库失败: HTTP ${upRes.status}`);
+    } else {
+      console.log(`[decide] 裁决案例已回写知识库（${parsed.data.decision}）`);
+    }
+  } catch (err) {
+    console.warn("[decide] 案例回写异常（不影响裁决主流程）:", err);
   }
 
   return NextResponse.json({ decision }, { status: 201 });

@@ -14,6 +14,9 @@ const taskSchema = z.object({
   approvedByDirector: z.boolean(),
   quotaUsed: z.number().int().min(0).max(10),
   hourOverride: z.number().int().min(0).max(23).optional(),
+  expectedAction: z
+    .enum(["deploy_service", "create_change_ticket", "query_quota"])
+    .optional(),
 });
 
 /**

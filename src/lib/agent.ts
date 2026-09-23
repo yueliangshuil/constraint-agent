@@ -38,6 +38,8 @@ export interface TaskInput {
   quotaUsed: number;
   /** 模拟小时（0-23）：演示/评测时可控触发时间类约束，缺省用服务器时钟 */
   hourOverride?: number;
+  /** 任务核心动作：该动作执行成功才算任务完成（辅助动作成功不能算完成） */
+  expectedAction?: ExecContext["action"];
 }
 
 export interface AgentResult {
@@ -168,7 +170,7 @@ export async function runAgent(
   if (maxSimilarity < SIMILARITY_FLOOR) {
     const msg = `未匹配到明确约束（最高相似度 ${maxSimilarity.toFixed(3)} < ${SIMILARITY_FLOOR}），按 fail-closed 策略保守拦截，需人工确认。`;
     await recordAudit({ action: "constraint_recall", detail: msg, result: "block" });
-    emit({ type: "done", data: { conclusion: msg } });
+    emit({ type: "done", data: { conclusion: msg, status: "blocked" } });
     return finalize("blocked", msg);
   }
 
@@ -210,6 +212,9 @@ export async function runAgent(
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const messages: any[] = [new SystemMessage(systemPrompt), new HumanMessage(input.task)];
+  let executedAny = false; // 是否有工具被放行执行
+  let blockedAny = false; // 是否有工具调用被拦截
+  const executedActions: string[] = []; // 成功执行的动作清单（终态判定用）
   emit({ type: "stage", data: { stage: "planning" } });
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -230,8 +235,13 @@ export async function runAgent(
         typeof response.content === "string"
           ? response.content
           : JSON.stringify(response.content);
-      emit({ type: "done", data: { conclusion } });
-      return finalize("completed", conclusion);
+      // 终态判定：核心动作执行成功 → completed；
+      // 核心动作未执行且发生过拦截 → blocked（辅助动作成功 ≠ 任务完成）
+      const coreDone =
+        input.expectedAction !== undefined && executedActions.includes(input.expectedAction);
+      const effectiveStatus = coreDone ? "completed" : blockedAny ? "blocked" : "completed";
+      emit({ type: "done", data: { conclusion, status: effectiveStatus } });
+      return finalize(effectiveStatus, conclusion);
     }
 
     for (const tc of toolCalls) {
@@ -278,6 +288,8 @@ export async function runAgent(
       if (decision.verdict === "pass") {
         try {
           const result = await callMcpTool(deployConn, tc.name, args);
+          executedAny = true;
+          executedActions.push(tc.name);
           steps.push({ tool: tc.name, args, verdict: "pass" });
           await recordAudit({
             action: tc.name,
@@ -290,6 +302,7 @@ export async function runAgent(
           messages.push(new ToolMessage({ tool_call_id: tc.id, content: msg }));
         }
       } else if (decision.verdict === "block") {
+        blockedAny = true;
         const violated = decision.violated
           .map((v) => `「${v.constraint.ruleName}」（${v.constraint.expression}）`)
           .join("；");
@@ -321,6 +334,6 @@ export async function runAgent(
   }
 
   const msg = `达到最大轮数（${MAX_ROUNDS}），任务强制终止。`;
-  emit({ type: "done", data: { conclusion: msg } });
+  emit({ type: "done", data: { conclusion: msg, status: "blocked" } });
   return finalize("blocked", msg);
 }
