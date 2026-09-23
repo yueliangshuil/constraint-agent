@@ -13,6 +13,7 @@ const taskSchema = z.object({
   hasTicket: z.boolean(),
   approvedByDirector: z.boolean(),
   quotaUsed: z.number().int().min(0).max(10),
+  hourOverride: z.number().int().min(0).max(23).optional(),
 });
 
 /**
@@ -39,13 +40,18 @@ export async function POST(request: Request) {
   const encoder = new TextEncoder();
   let seq = 0;
   let doneSent = false;
+  let closed = false;
 
   const stream = new ReadableStream({
     async start(controller) {
       const emit = (e: AgentEvent) => {
+        if (closed) return;
         if (e.type === "done") doneSent = true;
-        if (!controller.desiredSize) return; // 客户端断开（优雅取消由上层处理）
-        controller.enqueue(encoder.encode(encodeSSE(seq++, e.type, JSON.stringify(e.data))));
+        try {
+          controller.enqueue(encoder.encode(encodeSSE(seq++, e.type, JSON.stringify(e.data))));
+        } catch {
+          closed = true; // 客户端断开后 enqueue 抛错，静默停止
+        }
       };
       try {
         const result = await runAgent(input, emit, request.signal);

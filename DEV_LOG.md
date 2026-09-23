@@ -45,3 +45,16 @@
    - **模型消息组装细节**：LangChain 消息对象（SystemMessage/HumanMessage/AIMessage/ToolMessage）链式追加；ToolMessage 必须带 tool_call_id 与模型产出的 tool_calls 一一对应，否则 API 报错。
    - **工具参数校验在 Agent 层而非 MCP 层**：Zod 校验模型入参 → 参数非法直接以 ToolMessage 反馈（不让非法调用进入引擎），这是第二重保险。
    - **审计时机**：应用侧在每次 pass/block 后自动落库（审计工具不暴露给模型，避免模型选择性记录）。
+
+10. **漏召回的真实案例**（E2E 抓出，实证设计文档中的最大风险）：
+    - 现象：冲突场景（夜间紧急发布）未触发 conflict，检查 constraints 事件发现「紧急发布管理规范」的两条规则根本没被召回——RAG 知识库残留 Phase 2 评测的 40 份语料文档，把 topK=6 名额挤掉；
+    - 修复：① 清理知识库评测残留（41 份）；② 召回 topK 6→10；③ 检索 query 追加「业务约束规则」关键词；
+    - 教训：漏召回 = 违规放行在本项目中是**真实发生过的故障**，fail-closed 阈值只能兜底"召回太少"的情况，兜不住"召回不完整"——规则文档少、库干净时风险可控，规则量大了必须做标签过滤 + 覆盖率评测（P3 评测集里加入"召回完整性"指标）。
+
+11. **SSE 快速连续事件被静默丢弃**（emit 误用 desiredSize）：
+    - 现象：冲突分支在同一微任务内连续 emit 4 个事件（validation → decision_request → tool_result → done），但客户端只收到 validation——后续事件全部丢失；
+    - 根因：路由 emit 里写了 `if (!controller.desiredSize) return`，第一次 enqueue 后 desiredSize 归 0（默认高水位 1），未等消费者拉取就丢弃后续事件。这是对背压的误用——本地小事件流不需要应用层背压；
+    - 修复：去掉 desiredSize 判断，改为 closed 标志 + enqueue try/catch（客户端断开时 enqueue 抛错即静默停止）；
+    - 教训：ReadableStream 的 desiredSize 是给生产者做背压用的，连续 emit 场景下会误伤；事件完整性用 done 事件 + 序号校验兜底。
+
+12. **演示时间模拟器**：时间类约束依赖服务器时钟，演示/评测不可控。任务输入增加 hourOverride（0-23）字段，UI 提供模拟时间控件——评测集可复现（P3 依赖此设计）。

@@ -12,6 +12,7 @@ interface ScenarioInput {
   hasTicket: boolean;
   approvedByDirector: boolean;
   quotaUsed: number;
+  hourOverride?: number;
 }
 
 interface TraceEvent {
@@ -135,6 +136,23 @@ export default function Home() {
               max={10}
               value={input.quotaUsed}
               onChange={(e) => setInput({ ...input, quotaUsed: Number(e.target.value) || 0 })}
+              className="rounded-lg border border-zinc-300 px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            模拟时间（时，留空=真实时钟）
+            <input
+              type="number"
+              min={0}
+              max={23}
+              placeholder="如 23"
+              value={input.hourOverride ?? ""}
+              onChange={(e) =>
+                setInput({
+                  ...input,
+                  hourOverride: e.target.value === "" ? undefined : Number(e.target.value),
+                })
+              }
               className="rounded-lg border border-zinc-300 px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
             />
           </label>

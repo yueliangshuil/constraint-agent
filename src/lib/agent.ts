@@ -34,6 +34,8 @@ export interface TaskInput {
   hasTicket: boolean;
   approvedByDirector: boolean;
   quotaUsed: number;
+  /** 模拟小时（0-23）：演示/评测时可控触发时间类约束，缺省用服务器时钟 */
+  hourOverride?: number;
 }
 
 export interface AgentResult {
@@ -68,8 +70,9 @@ export async function runAgent(
   signal?: AbortSignal
 ): Promise<AgentResult> {
   const now = new Date();
+  const hour = input.hourOverride ?? now.getHours();
   const ctxBase: ExecContext = {
-    hour: now.getHours(),
+    hour,
     weekday: now.getDay() === 0 ? 7 : now.getDay(),
     isWorkday: now.getDay() >= 1 && now.getDay() <= 5,
     role: input.role,
@@ -103,7 +106,7 @@ export async function runAgent(
   let maxSimilarity = 0;
   try {
     const payload = await callMcpTool(ruleConn, "search_rules", {
-      query: `${input.task} ${input.env} 环境`,
+      query: `${input.task} ${input.env} 环境 业务约束规则`,
     });
     const parsed = JSON.parse(payload) as { chunks: { content: string; similarity: number }[]; text: string };
     maxSimilarity = Math.max(0, ...parsed.chunks.map((c) => c.similarity));

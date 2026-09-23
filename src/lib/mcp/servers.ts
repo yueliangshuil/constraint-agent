@@ -89,7 +89,7 @@ export function createRuleSearchServer(): McpServer {
     async ({ query }) => {
       const base = getEnv("RAG_API_BASE");
       const res = await fetch(
-        `${base}/api/retrieval?query=${encodeURIComponent(query)}&topK=6`,
+        `${base}/api/retrieval?query=${encodeURIComponent(query)}&topK=10`,
         { signal: AbortSignal.timeout(20_000) }
       );
       if (!res.ok) {
