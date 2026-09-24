@@ -145,7 +145,16 @@ export async function runAgent(
   emit({ type: "plan", data: { task: input.task } });
 
   // ---------- 1. MCP 连接（部署工具 + 规则检索） ----------
-  const servers = createAllServers(recordAudit);
+  // 部署事件落库：配额约束的真实状态来源（DEV_LOG #21）
+  const onDeploy = async (r: { service: string; env: string; version: string }) => {
+    await db.from("deploy_records").insert({
+      service: r.service,
+      env: r.env,
+      version: r.version,
+      execution_id: executionId ?? null,
+    });
+  };
+  const servers = createAllServers(recordAudit, onDeploy);
   const [deployConn, ruleConn] = await Promise.all([
     connectMcpServer(servers.deploy, "deploy-tools"),
     connectMcpServer(servers.ruleSearch, "rule-search"),
@@ -214,7 +223,6 @@ export async function runAgent(
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const messages: any[] = [new SystemMessage(systemPrompt), new HumanMessage(input.task)];
-  let executedAny = false; // 是否有工具被放行执行
   let blockedAny = false; // 是否有工具调用被拦截
   const executedActions: string[] = []; // 成功执行的动作清单（终态判定用）
   emit({ type: "stage", data: { stage: "planning" } });
@@ -275,13 +283,27 @@ export async function runAgent(
         messages.push(new ToolMessage({ tool_call_id: tc.id, content: bind.violation + "，请重新规划。" }));
         continue;
       }
-      const args = bind.args as { env?: "prod" | "staging" };
+      const args = bind.args as { env?: "prod" | "staging"; service?: string };
 
       // 2c. 组装执行上下文 → 规则引擎判定（硬门槛）
+      // 配额真实状态：当日该服务部署记录计数 + 表单预置值（跨任务、跨会话真实累积）
+      let quotaUsed = ctxBase.quotaUsed;
+      if (tc.name === "deploy_service") {
+        const startOfDay = new Date(now);
+        startOfDay.setHours(0, 0, 0, 0);
+        const { count } = await db
+          .from("deploy_records")
+          .select("id", { count: "exact", head: true })
+          .eq("service", String(args.service ?? ""))
+          .eq("env", ctxBase.env)
+          .gte("created_at", startOfDay.toISOString());
+        quotaUsed += count ?? 0;
+      }
       const ctx: ExecContext = {
         ...ctxBase,
         action: tc.name as ExecContext["action"],
         env: ctxBase.env, // 校验环境永远取场景值，与模型声称无关
+        quotaUsed,
       };
       const decision = evaluateConstraints(constraints, ctx);
       emit({
@@ -301,7 +323,6 @@ export async function runAgent(
       if (decision.verdict === "pass") {
         try {
           const result = await callMcpTool(deployConn, tc.name, args);
-          executedAny = true;
           executedActions.push(tc.name);
           steps.push({ tool: tc.name, args, verdict: "pass" });
           await recordAudit({

@@ -41,15 +41,18 @@ export const recordAuditSchema = z.object({
 
 // ---------- MCP Server 构建 ----------
 
-/** 发布工具 MCP：业务操作（mock 实现，演示自洽） */
-export function createDeployServer(): McpServer {
+/** 发布工具 MCP：业务操作（mock 执行 + 真实记录部署事件，供配额约束计数） */
+export function createDeployServer(
+  onDeploy: (record: { service: string; env: string; version: string }) => Promise<void>
+): McpServer {
   const server = new McpServer({ name: "deploy-tools", version: "1.0.0" });
 
   server.registerTool(
     "deploy_service",
     { description: "发布服务到指定环境（生产/预发）", inputSchema: { service: z.string(), env: z.string(), version: z.string() } },
     async ({ service, env, version }) => {
-      // mock：真实系统中此处对接发布平台 API
+      // mock：真实系统中此处对接发布平台 API；部署事件落库使配额约束具备真实状态
+      await onDeploy({ service, env, version });
       return {
         content: [{ type: "text" as const, text: `已发布 ${service}@${version} 到 ${env} 环境（模拟执行成功）` }],
       };
@@ -130,9 +133,12 @@ export function createAuditServer(onRecord: (record: { action: string; detail: s
 }
 
 /** 汇总：注册所有 MCP Server */
-export function createAllServers(onRecord: (record: { action: string; detail: string; result: string }) => Promise<void>) {
+export function createAllServers(
+  onRecord: (record: { action: string; detail: string; result: string }) => Promise<void>,
+  onDeploy: (record: { service: string; env: string; version: string }) => Promise<void>
+) {
   return {
-    deploy: createDeployServer(),
+    deploy: createDeployServer(onDeploy),
     ruleSearch: createRuleSearchServer(),
     audit: createAuditServer(onRecord),
   };
