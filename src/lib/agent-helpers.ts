@@ -29,3 +29,24 @@ export function bindSystemArgs(
   }
   return { args, violation: null };
 }
+
+/**
+ * Agent 最小权限（任务工具裁剪）：
+ * 按任务核心动作预选工具子集——模型物理上拿不到任务范围外的工具，
+ * 从源头防止"过度代理"（OWASP LLM Top 10）；规则引擎校验作为检测层兜底。
+ * 未声明核心动作的任务不暴露任何业务工具（最小权限默认值）。
+ */
+export const TOOL_SCOPES: Record<string, string[]> = {
+  deploy_service: ["deploy_service", "create_change_ticket", "query_quota"],
+  create_change_ticket: ["create_change_ticket"],
+  query_quota: ["query_quota"],
+};
+
+export function filterToolsForTask(
+  toolDefs: { type: "function"; function: { name: string } }[],
+  expectedAction: string | undefined
+): { type: "function"; function: { name: string } }[] {
+  const allowed = expectedAction ? TOOL_SCOPES[expectedAction] ?? [] : [];
+  if (allowed.length === 0) return [];
+  return toolDefs.filter((t) => allowed.includes(t.function.name));
+}

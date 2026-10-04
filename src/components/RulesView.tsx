@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { authHeaders, type ClientUser } from "@/lib/client-auth";
 
 /** 规则文档（RAG 知识库，经 /rag-api 代理） */
 interface RuleDoc {
@@ -23,7 +24,8 @@ const TEMPLATE = `## 规则X：规则名称
 可用变量：hour、weekday、isWorkday、role、env、quotaUsed、quotaLimit、isEmergency、hasTicket、approvedByDirector
 示例：env == "prod" && isWorkday && (hour >= 22 || hour < 6)`;
 
-export default function RulesView() {
+export default function RulesView({ user }: { user: ClientUser }) {
+  const canWrite = user.role === "director"; // 规则管理 RBAC：仅总监可上传/删除
   const [docs, setDocs] = useState<RuleDoc[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -33,7 +35,7 @@ export default function RulesView() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/rag-api/api/documents");
+      const res = await fetch("/api/rules", { headers: authHeaders() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setDocs((data.documents ?? []).filter((d: RuleDoc) => d.filename.endsWith(".md")));
@@ -47,17 +49,22 @@ export default function RulesView() {
   }, [load]);
 
   const upload = async (file: File) => {
+    if (!canWrite) return;
     setUploading(true);
     setError(null);
     setNotice(null);
     try {
       const formData = new FormData();
       formData.append("file", file);
-      const res = await fetch("/rag-api/api/documents", { method: "POST", body: formData });
+      const res = await fetch("/api/rules", {
+        method: "POST",
+        headers: authHeaders(),
+        body: formData,
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "上传失败");
       if (data.duplicated) setNotice(`《${file.name}》内容未变化，已跳过`);
-      else setNotice(`《${file.name}》入库成功（${data.chunkCount} 块，v${file.name} 新版已生效）`);
+      else setNotice(`《${file.name}》入库成功（${data.chunkCount} 块，新版已生效）`);
       load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "上传失败");
@@ -67,9 +74,16 @@ export default function RulesView() {
   };
 
   const remove = async (id: string, filename: string) => {
+    if (!canWrite) return;
     try {
-      const res = await fetch(`/rag-api/api/documents/${id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const res = await fetch(`/api/rules/${id}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error ?? `HTTP ${res.status}`);
+      }
       setNotice(`已删除《${filename}》`);
       load();
     } catch (e) {
@@ -93,24 +107,30 @@ export default function RulesView() {
           >
             规则文档模板
           </button>
-          <button
-            onClick={() => fileRef.current?.click()}
-            disabled={uploading}
-            className="rounded-lg bg-zinc-900 px-4 py-1.5 text-xs font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
-          >
-            {uploading ? "解析入库中…" : "上传规则文档"}
-          </button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".md,.markdown,.txt"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) upload(f);
-              e.target.value = "";
-            }}
-          />
+          {canWrite ? (
+            <>
+              <button
+                onClick={() => fileRef.current?.click()}
+                disabled={uploading}
+                className="rounded-lg bg-zinc-900 px-4 py-1.5 text-xs font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
+              >
+                {uploading ? "解析入库中…" : "上传规则文档"}
+              </button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".md,.markdown,.txt"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) upload(f);
+                  e.target.value = "";
+                }}
+              />
+            </>
+          ) : (
+            <span className="text-xs text-zinc-400">仅总监角色可管理规则文档</span>
+          )}
         </div>
       </div>
 
@@ -168,12 +188,14 @@ export default function RulesView() {
                       {new Date(d.created_at).toLocaleString()}
                     </td>
                     <td className="px-4 py-2.5 text-right">
-                      <button
-                        onClick={() => remove(d.id, d.filename)}
-                        className="text-xs text-zinc-400 hover:text-red-500"
-                      >
-                        删除
-                      </button>
+                      {canWrite && (
+                        <button
+                          onClick={() => remove(d.id, d.filename)}
+                          className="text-xs text-zinc-400 hover:text-red-500"
+                        >
+                          删除
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}

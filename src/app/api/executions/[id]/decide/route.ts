@@ -2,12 +2,13 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import { getEnv } from "@/lib/env";
+import { canDecide, getAuthUser } from "@/lib/auth";
 
 type Params = { params: Promise<{ id: string }> };
 
 const decideSchema = z.object({
   decision: z.enum(["allow", "block"]),
-  decidedBy: z.string().max(50).optional(),
+  // decidedBy 不再接受客户端输入：裁决人来自认证会话（审计可信）
 });
 
 /**
@@ -16,6 +17,16 @@ const decideSchema = z.object({
  */
 export async function POST(request: Request, { params }: Params) {
   const { id } = await params;
+
+  // 鉴权：仅 director 可裁决；身份来自认证会话
+  const user = await getAuthUser(request);
+  if (!user) {
+    return NextResponse.json({ error: "未登录或会话已过期" }, { status: 401 });
+  }
+  if (!canDecide(user)) {
+    return NextResponse.json({ error: "仅总监角色可执行人工裁决" }, { status: 403 });
+  }
+
   const parsed = decideSchema.safeParse(await request.json());
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "参数不合法" }, { status: 400 });
@@ -24,10 +35,13 @@ export async function POST(request: Request, { params }: Params) {
   const db = getSupabaseAdmin();
   const { data: execution } = await db
     .from("executions")
-    .select("id, task, status, steps")
+    .select("id, task, status, steps, tenant_id")
     .eq("id", id)
     .single();
   if (!execution) {
+    return NextResponse.json({ error: "执行记录不存在" }, { status: 404 });
+  }
+  if (execution.tenant_id !== user.tenantId) {
     return NextResponse.json({ error: "执行记录不存在" }, { status: 404 });
   }
   if (execution.status !== "conflict") {
@@ -44,7 +58,9 @@ export async function POST(request: Request, { params }: Params) {
       execution_id: id,
       conflicting_rules: (conflictStep as Record<string, unknown> | undefined) ?? {},
       decision: parsed.data.decision,
-      decided_by: parsed.data.decidedBy ?? null,
+      decided_by: user.name, // 裁决人来自认证身份，不可自述
+      user_id: user.id,
+      tenant_id: user.tenantId,
     })
     .select()
     .single();
@@ -65,7 +81,7 @@ export async function POST(request: Request, { params }: Params) {
       `- 禁止侧：${blockers.map((b) => b.ruleName).join("、") || "无"}`,
       `- 豁免侧：${exemptions.map((e) => e.ruleName).join("、") || "无"}`,
       `- 裁决结果：${parsed.data.decision === "allow" ? "放行" : "拦截"}`,
-      `- 裁决人：${parsed.data.decidedBy ?? "未署名"}`,
+      `- 裁决人：${user.name}`,
       `- 裁决时间：${new Date().toISOString()}`,
       "",
       "本案例作为同类约束冲突的裁决先例，供后续任务参考。",

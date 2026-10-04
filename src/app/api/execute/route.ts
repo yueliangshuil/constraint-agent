@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { runAgent, type AgentEvent, type TaskInput } from "@/lib/agent";
+import { getAuthUser } from "@/lib/auth";
 import { encodeSSE } from "@/lib/sse";
 
 export const dynamic = "force-dynamic";
@@ -7,7 +8,7 @@ export const maxDuration = 300;
 
 const taskSchema = z.object({
   task: z.string().min(1, "任务描述不能为空"),
-  role: z.enum(["intern", "junior", "senior", "lead", "director"]),
+  // role 不再接受客户端输入：身份由认证会话决定（系统事实，防自述越权）
   env: z.enum(["prod", "staging"]),
   isEmergency: z.boolean(),
   hasTicket: z.boolean(),
@@ -25,6 +26,12 @@ const taskSchema = z.object({
  * 事件帧协议与 RAG 项目一致（encodeSSE 复用）。
  */
 export async function POST(request: Request) {
+  // 认证优先于参数校验：先确认身份，再处理请求（fail fast 安全原则）
+  const user = await getAuthUser(request);
+  if (!user) {
+    return Response.json({ error: "未登录或会话已过期" }, { status: 401 });
+  }
+
   let body: unknown;
   try {
     body = await request.json();
@@ -38,7 +45,8 @@ export async function POST(request: Request) {
       { status: 400 }
     );
   }
-  const input = parsed.data as TaskInput;
+
+  const input = { ...parsed.data, role: user.role, userId: user.id, tenantId: user.tenantId } as TaskInput;
 
   const encoder = new TextEncoder();
   let seq = 0;

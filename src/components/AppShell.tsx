@@ -1,8 +1,17 @@
 "use client";
 
 import type { ReactNode } from "react";
+import type { ClientUser } from "@/lib/client-auth";
 
 export type ViewKey = "execute" | "rules" | "history";
+
+const ROLE_LABELS: Record<string, string> = {
+  intern: "实习生",
+  junior: "初级工程师",
+  senior: "高级工程师",
+  lead: "技术主管",
+  director: "总监",
+};
 
 const NAV_ITEMS: { key: ViewKey; label: string; icon: string }[] = [
   { key: "execute", label: "执行台", icon: "▶" },
@@ -14,11 +23,15 @@ export default function AppShell({
   view,
   onViewChange,
   ragOnline,
+  user,
+  onLogout,
   children,
 }: {
   view: ViewKey;
   onViewChange: (v: ViewKey) => void;
   ragOnline: boolean | null;
+  user: ClientUser;
+  onLogout: () => void;
   children: ReactNode;
 }) {
   return (
@@ -52,6 +65,15 @@ export default function AppShell({
             />
             {ragOnline === null ? "检测中" : ragOnline ? "RAG 检索服务在线" : "RAG 检索服务离线"}
           </span>
+          <span className="rounded-full bg-blue-50 px-2.5 py-1 text-blue-600 dark:bg-blue-950/40 dark:text-blue-400">
+            {user.name} · {ROLE_LABELS[user.role] ?? user.role}
+          </span>
+          <button
+            onClick={onLogout}
+            className="rounded-full px-2 py-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 dark:hover:bg-zinc-800"
+          >
+            退出
+          </button>
         </div>
       </header>
 

@@ -12,7 +12,7 @@ import { evaluateConstraints } from "./rule-engine";
 import { structurizeRules } from "./structurize";
 import { connectMcpServer, callMcpTool, toOpenAIToolDefs } from "./mcp/client";
 import { createAllServers } from "./mcp/servers";
-import { bindSystemArgs } from "./agent-helpers";
+import { bindSystemArgs, filterToolsForTask } from "./agent-helpers";
 import type { ExecContext } from "@/types/constraint";
 
 export interface AgentEvent {
@@ -41,6 +41,10 @@ export interface TaskInput {
   hourOverride?: number;
   /** 任务核心动作：该动作执行成功才算任务完成（辅助动作成功不能算完成） */
   expectedAction?: ExecContext["action"];
+  /** 认证用户 ID（审计归属，路由层注入） */
+  userId?: string;
+  /** 租户 ID（数据隔离，路由层注入） */
+  tenantId?: string;
 }
 
 export interface AgentResult {
@@ -117,6 +121,8 @@ export async function runAgent(
       },
       status: "running",
       steps: [],
+      user_id: input.userId ?? null,
+      tenant_id: input.tenantId ?? "demo-tenant",
     })
     .select()
     .single();
@@ -152,6 +158,8 @@ export async function runAgent(
       env: r.env,
       version: r.version,
       execution_id: executionId ?? null,
+      user_id: input.userId ?? null,
+      tenant_id: input.tenantId ?? "demo-tenant",
     });
   };
   const servers = createAllServers(recordAudit, onDeploy);
@@ -199,9 +207,19 @@ export async function runAgent(
   }
 
   // ---------- 4. 手写 ReAct 循环 ----------
-  const model = getChatModel().bindTools(
-    (await toOpenAIToolDefs([deployConn])) as never
-  );
+  // Agent 最小权限：按任务核心动作裁剪工具集（模型物理上拿不到范围外工具）
+  const allToolDefs = await toOpenAIToolDefs([deployConn]);
+  const scopedToolDefs = filterToolsForTask(allToolDefs, input.expectedAction);
+  emit({
+    type: "stage",
+    data: {
+      stage: "planning",
+      scopedTools: scopedToolDefs.map((t) => t.function.name),
+    },
+  });
+  const model = scopedToolDefs.length > 0
+    ? getChatModel().bindTools(scopedToolDefs as never)
+    : getChatModel();
 
   const constraintText = constraints
     .map(

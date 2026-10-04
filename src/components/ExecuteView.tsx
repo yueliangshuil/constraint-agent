@@ -2,10 +2,18 @@
 
 import { useRef, useState } from "react";
 import { parseSSEBlock } from "@/lib/sse";
+import { authHeaders, type ClientUser } from "@/lib/client-auth";
+
+const ROLE_LABELS: Record<string, string> = {
+  intern: "实习生",
+  junior: "初级工程师",
+  senior: "高级工程师",
+  lead: "技术主管",
+  director: "总监",
+};
 
 interface ScenarioInput {
   task: string;
-  role: "intern" | "junior" | "senior" | "lead" | "director";
   env: "prod" | "staging";
   isEmergency: boolean;
   hasTicket: boolean;
@@ -27,10 +35,15 @@ interface ConflictInfo {
   exemptions: { ruleName: string; sourceChunk: string }[];
 }
 
-export default function ExecuteView({ onExecuted }: { onExecuted: () => void }) {
+export default function ExecuteView({
+  user,
+  onExecuted,
+}: {
+  user: ClientUser;
+  onExecuted: () => void;
+}) {
   const [input, setInput] = useState<ScenarioInput>({
     task: "将 payment-service v2.3.0 发布到生产环境",
-    role: "senior",
     env: "prod",
     isEmergency: false,
     hasTicket: true,
@@ -42,7 +55,6 @@ export default function ExecuteView({ onExecuted }: { onExecuted: () => void }) 
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<ConflictInfo | null>(null);
-  const [decidedBy, setDecidedBy] = useState("");
   const [deciding, setDeciding] = useState(false);
   const ctrlRef = useRef<AbortController | null>(null);
   const execIdRef = useRef<string | null>(null);
@@ -59,7 +71,7 @@ export default function ExecuteView({ onExecuted }: { onExecuted: () => void }) 
     try {
       const res = await fetch("/api/execute", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify(input),
         signal: ctrl.signal,
       });
@@ -110,15 +122,14 @@ export default function ExecuteView({ onExecuted }: { onExecuted: () => void }) 
     try {
       const res = await fetch(`/api/executions/${conflict.executionId}/decide`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision, decidedBy: decidedBy || undefined }),
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ decision }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
         throw new Error(data?.error ?? "裁决提交失败");
       }
       setConflict(null);
-      setDecidedBy("");
       onExecuted();
     } catch (e) {
       setError(e instanceof Error ? e.message : "裁决提交失败");
@@ -161,18 +172,12 @@ export default function ExecuteView({ onExecuted }: { onExecuted: () => void }) 
             </select>
           </label>
           <div className="grid grid-cols-2 gap-3 text-xs">
-            <label className="flex flex-col gap-1">
-              执行角色
-              <select
-                value={input.role}
-                onChange={(e) => setInput({ ...input, role: e.target.value as ScenarioInput["role"] })}
-                className="rounded-lg border border-zinc-300 px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
-              >
-                {["intern", "junior", "senior", "lead", "director"].map((r) => (
-                  <option key={r} value={r}>{r}</option>
-                ))}
-              </select>
-            </label>
+            <div className="flex flex-col gap-1">
+              <span>当前角色（登录身份）</span>
+              <div className="rounded-lg border border-blue-200 bg-blue-50 px-2 py-1.5 text-blue-700 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-300">
+                {ROLE_LABELS[user.role] ?? user.role}
+              </div>
+            </div>
             <label className="flex flex-col gap-1">
               目标环境
               <select
@@ -296,15 +301,9 @@ export default function ExecuteView({ onExecuted }: { onExecuted: () => void }) 
                 ))}
               </div>
             </div>
-            <label className="mb-4 flex flex-col gap-1 text-xs">
-              裁决人
-              <input
-                value={decidedBy}
-                onChange={(e) => setDecidedBy(e.target.value)}
-                placeholder="输入姓名（记录到审计）"
-                className="rounded-lg border border-zinc-300 px-3 py-2 dark:border-zinc-700 dark:bg-zinc-800"
-              />
-            </label>
+            <p className="mb-4 text-xs text-zinc-400">
+              裁决人将记录为当前登录身份：{user.name}（{ROLE_LABELS[user.role] ?? user.role}）
+            </p>
             <div className="flex gap-3">
               <button
                 onClick={() => decide("allow")}

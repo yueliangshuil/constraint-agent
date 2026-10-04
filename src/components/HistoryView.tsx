@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { authHeaders } from "@/lib/client-auth";
 
 interface ExecutionRow {
   id: string;
@@ -26,7 +27,7 @@ export default function HistoryView({ refreshTick }: { refreshTick: number }) {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/api/executions");
+      const res = await fetch("/api/executions", { headers: authHeaders() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setExecutions(data.executions ?? []);
