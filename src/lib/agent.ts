@@ -39,6 +39,8 @@ export interface TaskInput {
   quotaUsed: number;
   /** 模拟小时（0-23）：演示/评测时可控触发时间类约束，缺省用服务器时钟 */
   hourOverride?: number;
+  /** 模拟星期（1=周一 ~ 7=周日）：与 hourOverride 配套的时间模拟器，缺省用服务器时钟 */
+  weekdayOverride?: number;
   /** 任务核心动作：该动作执行成功才算任务完成（辅助动作成功不能算完成） */
   expectedAction?: ExecContext["action"];
   /** 认证用户 ID（审计归属，路由层注入） */
@@ -81,10 +83,11 @@ export async function runAgent(
 ): Promise<AgentResult> {
   const now = new Date();
   const hour = input.hourOverride ?? now.getHours();
+  const weekday = input.weekdayOverride ?? (now.getDay() === 0 ? 7 : now.getDay());
   const ctxBase: ExecContext = {
     hour,
-    weekday: now.getDay() === 0 ? 7 : now.getDay(),
-    isWorkday: now.getDay() >= 1 && now.getDay() <= 5,
+    weekday,
+    isWorkday: weekday >= 1 && weekday <= 5,
     role: input.role,
     action: "deploy_service",
     env: input.env,
@@ -116,8 +119,8 @@ export async function runAgent(
         approvedByDirector: input.approvedByDirector,
         quotaUsed: input.quotaUsed,
         hour: hour,
-        weekday: now.getDay() === 0 ? 7 : now.getDay(),
-        isWorkday: now.getDay() >= 1 && now.getDay() <= 5,
+        weekday: weekday,
+        isWorkday: weekday >= 1 && weekday <= 5,
       },
       status: "running",
       steps: [],
@@ -243,7 +246,6 @@ export async function runAgent(
   const messages: any[] = [new SystemMessage(systemPrompt), new HumanMessage(input.task)];
   let blockedAny = false; // 是否有工具调用被拦截
   const executedActions: string[] = []; // 成功执行的动作清单（终态判定用）
-  emit({ type: "stage", data: { stage: "planning" } });
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
     if (signal?.aborted) {

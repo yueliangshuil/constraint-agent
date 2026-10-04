@@ -20,6 +20,7 @@ interface ScenarioInput {
   approvedByDirector: boolean;
   quotaUsed: number;
   hourOverride?: number;
+  weekdayOverride?: number;
   expectedAction?: "deploy_service" | "create_change_ticket" | "query_quota";
 }
 
@@ -216,6 +217,24 @@ export default function ExecuteView({
                 }
                 className="rounded-lg border border-zinc-300 px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
               />
+            </label>
+            <label className="flex flex-col gap-1">
+              模拟星期（留空=真实）
+              <select
+                value={input.weekdayOverride ?? ""}
+                onChange={(e) =>
+                  setInput({
+                    ...input,
+                    weekdayOverride: e.target.value === "" ? undefined : Number(e.target.value),
+                  })
+                }
+                className="rounded-lg border border-zinc-300 px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
+              >
+                <option value="">跟随真实时钟</option>
+                {["周一", "周二", "周三", "周四", "周五", "周六", "周日"].map((d, i) => (
+                  <option key={i} value={i + 1}>{d}</option>
+                ))}
+              </select>
             </label>
           </div>
           <div className="flex flex-col gap-2 text-xs">
