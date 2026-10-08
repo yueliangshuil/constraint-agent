@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { authHeaders } from "@/lib/client-auth";
+import Markdown from "./Markdown";
 
 interface ExecutionRow {
   id: string;
@@ -135,8 +136,8 @@ export default function HistoryView({ refreshTick }: { refreshTick: number }) {
           </div>
           {selected.plan?.conclusion && (
             <div className="mt-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-              <p className="mb-1 text-xs font-medium text-zinc-400">最终结论</p>
-              <pre className="whitespace-pre-wrap text-xs">{selected.plan.conclusion}</pre>
+              <p className="mb-2 text-xs font-medium text-zinc-400">最终结论</p>
+              <Markdown content={selected.plan.conclusion} />
             </div>
           )}
         </div>

@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { parseSSEBlock } from "@/lib/sse";
 import { authHeaders, type ClientUser } from "@/lib/client-auth";
+import Markdown from "./Markdown";
 
 const ROLE_LABELS: Record<string, string> = {
   intern: "实习生",
@@ -446,7 +447,7 @@ function EventBody({ type, data }: { type: string; data: Record<string, unknown>
     );
   }
   if (type === "done") {
-    return <pre className="whitespace-pre-wrap text-sm">{String(data.conclusion ?? "")}</pre>;
+    return <Markdown content={String(data.conclusion ?? "")} />;
   }
   return <pre className="whitespace-pre-wrap text-xs text-zinc-500">{JSON.stringify(data, null, 2)}</pre>;
 }
