@@ -47,7 +47,15 @@ export async function POST(request: Request) {
     );
   }
 
-  const input = { ...parsed.data, role: user.role, userId: user.id, tenantId: user.tenantId } as TaskInput;
+  // 系统绑定：总监身份即审批人（表单不再接受审批自述，防止伪造审批状态）
+  const approvedByDirector = user.role === "director" ? true : parsed.data.approvedByDirector;
+  const input = {
+    ...parsed.data,
+    approvedByDirector,
+    role: user.role,
+    userId: user.id,
+    tenantId: user.tenantId,
+  } as TaskInput;
 
   const encoder = new TextEncoder();
   let seq = 0;

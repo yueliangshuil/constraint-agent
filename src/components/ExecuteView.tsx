@@ -243,7 +243,10 @@ export default function ExecuteView({
               [
                 ["isEmergency", "紧急发布"],
                 ["hasTicket", "已关联变更工单"],
-                ["approvedByDirector", "已获总监审批"],
+                // 总监身份即审批人：审批状态由系统绑定，不提供自述复选框
+                ...(user.role !== "director"
+                  ? ([["approvedByDirector", "已获总监审批"]] as const)
+                  : []),
               ] as const
             ).map(([key, label]) => (
               <label key={key} className="flex items-center gap-2">
@@ -255,6 +258,9 @@ export default function ExecuteView({
                 {label}
               </label>
             ))}
+            {user.role === "director" && (
+              <p className="text-[11px] text-blue-500">总监身份登录：审批状态由身份直接决定（视为已审批）</p>
+            )}
           </div>
           <div className="flex gap-2">
             <button
