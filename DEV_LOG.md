@@ -132,3 +132,24 @@
     - 确定性评测扩充至 24 场景（V01/V02 幂等场景），24/24 通过；实测：v9.9.9 首次发布 pass、重复发布被幂等拦截；
     - 附带发现：某次模型把 service 参数填成字面量 "service"——LLM 参数不规范的实证，佐证 Zod 校验 + 系统绑定的必要性；
     - 意义：这是「规则与执行解耦」最直接的演示——新增约束类型只加文档和变量，不动引擎、不改 Agent 循环。
+
+## 2026-10-08 · 模型调用故障排障与状态真实化（用户实测连环发现）
+
+26. **LangChain bindTools 在 Next.js dev 运行时的 generations 空数组故障 → 手写模型客户端**：
+    - 现象：dev server 中带工具的 model.invoke 抛 "Cannot read properties of undefined (reading 'message')"，最终结论变成该报错文本；tsx 独立进程跑同一代码完全正常；
+    - 排障过程（完整记录）：① 探针隔离 bindTools 成功 → ② 真实 API 5/5 失败 vs 探针 3/3 成功 → ③ 删除 .next 缓存重启仍失败 → ④ 拦截全局 fetch 抓请求体（正常）→ ⑤ 抓响应（200 + choices + tool_calls 全正常）→ ⑥ 定位打包代码 `generations[0][0].message` 处抛错——**API 请求与响应都正常，LangChain 的响应映射层在 Next 运行时损坏**；
+    - 决策与修复：模型调用是项目关键路径，不依赖框架——手写 DeepSeek 客户端（llm.ts：chatPlain/chatWithTools，原生 fetch + 手动 tool_calls 组装），移除 @langchain/* 全部依赖（Agent 循环、结构化抽取全换）。修复后三场景实测通过，确定性评测 24/24、单测 14/14 回归通过；
+    - 面试讲法：框架黑盒故障无法定位时，关键路径自研是工程兜底能力。
+
+27. **表单上下文从未告知规划模型**（用户实测：模型"无法确认发布是否合规"而不执行 deploy）：
+    - 根因：系统提示词写"上下文由系统提供，不要假设"，但从未把表单事实（角色/环境/时间/紧急/工单/审批/配额）注入提示词——模型无从规划；
+    - 修复：执行上下文事实块（含模拟时间、星期、各标志位）写入 system prompt；模型基于事实规划（无工单时自主先建工单），引擎仍强制校验——「模型可提议、系统可决定」不变。
+
+28. **mock 工具与真实状态脱节**（用户实测：query_quota 回复"剩余 2 次"但发布被配额拦）：
+    - 根因：query_quota 工具硬编码 mock 回复，而规则引擎查 deploy_records 真实计数——查询与校验不同源，模型困惑"两者不一致"；
+    - 修复：query_quota 与引擎同源查询 deploy_records（含表单预置值），杜绝回复与校验状态不一致。
+
+29. **hasTicket 静态表单值问题**（用户实测：模型创建了工单但约束仍判无工单）：
+    - 根因：与 quotaUsed 同源——hasTicket 是表单静态值，模型 create_change_ticket 成功后系统状态未变；
+    - 修复：ticket_records 表（迁移 004）真实落库；deploy 校验时 hasTicket = 表单预置 OR 当日该服务存在工单记录。实测：无工单场景模型自主建工单 → 发布放行 → completed（Agent 自主完成合规流程的完整演示）；
+    - 另：runAgent 全流程 try/catch 兜底——任何未捕获异常必落终态（用户实测"卡运行中"）；GET /api/executions 增加僵尸清扫（running 超 10 分钟 → cancelled）。

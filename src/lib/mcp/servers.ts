@@ -43,7 +43,9 @@ export const recordAuditSchema = z.object({
 
 /** 发布工具 MCP：业务操作（mock 执行 + 真实记录部署事件，供配额约束计数） */
 export function createDeployServer(
-  onDeploy: (record: { service: string; env: string; version: string }) => Promise<void>
+  onDeploy: (record: { service: string; env: string; version: string }) => Promise<void>,
+  onQueryQuota: (service: string) => Promise<string>,
+  onTicket: (record: { service: string; env: string; reason: string; severity: string }) => Promise<void>
 ): McpServer {
   const server = new McpServer({ name: "deploy-tools", version: "1.0.0" });
 
@@ -63,6 +65,8 @@ export function createDeployServer(
     "create_change_ticket",
     { description: "创建变更工单", inputSchema: { service: z.string(), reason: z.string(), severity: z.string() } },
     async ({ service, reason, severity }) => {
+      // 工单落库：hasTicket 约束的真实状态来源（与规则引擎同源）
+      await onTicket({ service, env: "prod", reason, severity });
       return {
         content: [{ type: "text" as const, text: `已创建变更工单（服务: ${service}，级别: ${severity}，原因: ${reason}）工单号 CHG-${Date.now()}` }],
       };
@@ -73,8 +77,10 @@ export function createDeployServer(
     "query_quota",
     { description: "查询服务当日发布配额使用情况", inputSchema: { service: z.string() } },
     async ({ service }) => {
+      // 与规则引擎同源的真实状态（deploy_records 当日计数），保证查询与校验一致
+      const text = await onQueryQuota(service);
       return {
-        content: [{ type: "text" as const, text: `${service} 当日已发布 1 次，配额 3 次，剩余 2 次` }],
+        content: [{ type: "text" as const, text }],
       };
     }
   );
@@ -135,10 +141,12 @@ export function createAuditServer(onRecord: (record: { action: string; detail: s
 /** 汇总：注册所有 MCP Server */
 export function createAllServers(
   onRecord: (record: { action: string; detail: string; result: string }) => Promise<void>,
-  onDeploy: (record: { service: string; env: string; version: string }) => Promise<void>
+  onDeploy: (record: { service: string; env: string; version: string }) => Promise<void>,
+  onQueryQuota: (service: string) => Promise<string>,
+  onTicket: (record: { service: string; env: string; reason: string; severity: string }) => Promise<void>
 ) {
   return {
-    deploy: createDeployServer(onDeploy),
+    deploy: createDeployServer(onDeploy, onQueryQuota, onTicket),
     ruleSearch: createRuleSearchServer(),
     audit: createAuditServer(onRecord),
   };

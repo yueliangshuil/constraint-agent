@@ -71,6 +71,7 @@ export async function POST(request: Request) {
           emit({ type: "done", data: { conclusion: result.conclusion, status: result.status } });
         }
       } catch (err) {
+        console.error("[execute] 执行异常:", err);
         const message = err instanceof Error ? err.message : "执行异常";
         if (!doneSent) {
           emit({ type: "done", data: { conclusion: `执行异常：${message}` } });

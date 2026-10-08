@@ -4,9 +4,8 @@
  * → pass 走 MCP 执行 / block 反馈违规约束让模型重规划 / conflict 暂停待人工裁决
  * → 最大 6 轮强制终止，全程事件回调（SSE 推送）+ 审计落库。
  */
-import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import { z } from "zod";
-import { getChatModel } from "./llm";
+import { chatWithTools, type PlainMessage, type ToolDef } from "./llm";
 import { getSupabaseAdmin } from "./supabase";
 import { evaluateConstraints } from "./rule-engine";
 import { structurizeRules } from "./structurize";
@@ -154,6 +153,7 @@ export async function runAgent(
 
   emit({ type: "plan", data: { task: input.task } });
 
+  try {
   // ---------- 1. MCP 连接（部署工具 + 规则检索） ----------
   // 部署事件落库：配额约束的真实状态来源（DEV_LOG #21）
   const onDeploy = async (r: { service: string; env: string; version: string }) => {
@@ -166,7 +166,32 @@ export async function runAgent(
       tenant_id: input.tenantId ?? "demo-tenant",
     });
   };
-  const servers = createAllServers(recordAudit, onDeploy);
+  // 配额查询与规则引擎同源（deploy_records 真实计数），杜绝 mock 回复与校验状态不一致
+  const onQueryQuota = async (service: string): Promise<string> => {
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const { count } = await db
+      .from("deploy_records")
+      .select("id", { count: "exact", head: true })
+      .eq("service", service)
+      .eq("env", ctxBase.env)
+      .gte("created_at", startOfDay.toISOString());
+    const used = (count ?? 0) + ctxBase.quotaUsed;
+    return `${service} 当日已发布 ${used} 次，配额 ${ctxBase.quotaLimit} 次，剩余 ${Math.max(0, ctxBase.quotaLimit - used)} 次`;
+  };
+  // 工单落库：hasTicket 约束的真实状态来源（模型创建的工单真实生效）
+  const onTicket = async (r: { service: string; env: string; reason: string; severity: string }) => {
+    await db.from("ticket_records").insert({
+      service: r.service,
+      env: r.env,
+      reason: r.reason,
+      severity: r.severity,
+      execution_id: executionId ?? null,
+      user_id: input.userId ?? null,
+      tenant_id: input.tenantId ?? "demo-tenant",
+    });
+  };
+  const servers = createAllServers(recordAudit, onDeploy, onQueryQuota, onTicket);
   const [deployConn, ruleConn] = await Promise.all([
     connectMcpServer(servers.deploy, "deploy-tools"),
     connectMcpServer(servers.ruleSearch, "rule-search"),
@@ -221,9 +246,7 @@ export async function runAgent(
       scopedTools: scopedToolDefs.map((t) => t.function.name),
     },
   });
-  const model = scopedToolDefs.length > 0
-    ? getChatModel().bindTools(scopedToolDefs as never)
-    : getChatModel();
+  const model = null; // 模型调用走手写客户端 chatWithTools（DEV_LOG #26）
 
   const constraintText = constraints
     .map(
@@ -232,20 +255,33 @@ export async function runAgent(
     )
     .join("\n");
 
+  const weekdayNames = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
   const systemPrompt = [
     "你是业务约束感知的规划 Agent，负责在规则约束下规划并执行任务。",
+    "",
+    "【当前执行上下文（系统提供的事实，据此规划，不要假设）】",
+    `- 执行角色：${ctxBase.role}（身份由登录认证决定）`,
+    `- 目标环境：${ctxBase.env}`,
+    `- 当前时间：${String(ctxBase.hour).padStart(2, "0")}:00，${weekdayNames[ctxBase.weekday - 1]}${ctxBase.isWorkday ? "（工作日）" : "（非工作日）"}`,
+    `- 紧急发布：${ctxBase.isEmergency ? "是" : "否"}`,
+    `- 已关联变更工单：${ctxBase.hasTicket ? "是" : "否"}`,
+    `- 已获总监审批：${ctxBase.approvedByDirector ? "是" : "否"}`,
+    `- 当日该服务已发布次数：${ctxBase.quotaUsed}（上限 ${ctxBase.quotaLimit}）`,
+    "",
     "【当前生效的业务约束】",
     constraintText || "（无）",
     "",
     "【执行规则】",
-    "1. 每次工具调用都会被规则引擎校验：通过才执行；违规会被拦截并反馈给你，收到拦截后请重新规划合规方案；",
-    "2. 上下文：用户的角色、环境、紧急标记等由系统提供，不要假设；",
-    "3. 任务完成或确认无法合规完成时，输出最终结论（简体中文，Markdown 格式：分点说明执行了什么、校验结果与被拦截的原因）。",
-    "4. 所有面向用户的输出一律使用简体中文。",
+    "1. 依据执行上下文与业务约束规划工具调用序列；每次工具调用都会被规则引擎校验：通过才执行，违规会被拦截并反馈给你，收到拦截后请重新规划合规方案；",
+    "2. 任务完成或确认无法合规完成时，输出最终结论（简体中文，Markdown 格式：分点说明执行了什么、校验结果与被拦截的原因）。",
+    "3. 所有面向用户的输出一律使用简体中文。",
   ].join("\n");
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const messages: any[] = [new SystemMessage(systemPrompt), new HumanMessage(input.task)];
+  const messages: PlainMessage[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: input.task },
+  ];
   let blockedAny = false; // 是否有工具调用被拦截
   const executedActions: string[] = []; // 成功执行的动作清单（终态判定用）
 
@@ -253,20 +289,11 @@ export async function runAgent(
     if (signal?.aborted) {
       return finalize("cancelled", "任务已取消");
     }
-    const response = await model.invoke(messages);
-    messages.push(new AIMessage(response as never));
-
-    const toolCalls = (response.tool_calls ?? []) as {
-      id: string;
-      name: string;
-      args: Record<string, unknown>;
-    }[];
+    const response = await chatWithTools(messages, scopedToolDefs as ToolDef[]);
+    const toolCalls = response.toolCalls;
 
     if (toolCalls.length === 0) {
-      const conclusion =
-        typeof response.content === "string"
-          ? response.content
-          : JSON.stringify(response.content);
+      const conclusion = response.content ?? "";
       // 终态判定：核心动作执行成功 → completed；
       // 核心动作未执行且发生过拦截 → blocked（辅助动作成功 ≠ 任务完成）
       const coreDone =
@@ -276,22 +303,40 @@ export async function runAgent(
       return finalize(effectiveStatus, conclusion);
     }
 
+    // 记录本轮 assistant 消息（含工具调用）
+    messages.push({
+      role: "assistant",
+      content: response.content,
+      tool_calls: toolCalls.map((tc) => ({
+        id: tc.id,
+        type: "function",
+        function: { name: tc.name, arguments: tc.arguments },
+      })),
+    });
+
     for (const tc of toolCalls) {
-      emit({ type: "tool_call", data: { name: tc.name, args: tc.args } });
+      // 模型工具参数是 JSON 字符串，解析失败按入参非法处理
+      let tcArgs: Record<string, unknown> = {};
+      try {
+        tcArgs = JSON.parse(tc.arguments) as Record<string, unknown>;
+      } catch {
+        /* 保持空对象，走入参校验拦截 */
+      }
+      emit({ type: "tool_call", data: { name: tc.name, args: tcArgs } });
 
       // 2a. 入参校验（第二重保险）
       const schema = TOOL_SCHEMAS[tc.name];
       if (!schema) {
         const msg = `工具 ${tc.name} 不存在，已拦截`;
         await recordAudit({ action: tc.name, detail: msg, result: "block" });
-        messages.push(new ToolMessage({ tool_call_id: tc.id, content: msg }));
+        messages.push({ role: "tool", content: msg, tool_call_id: tc.id });
         continue;
       }
-      const parsedArgs = schema.safeParse(tc.args);
+      const parsedArgs = schema.safeParse(tcArgs);
       if (!parsedArgs.success) {
         const msg = `工具 ${tc.name} 入参非法：${parsedArgs.error.issues[0]?.message ?? "格式错误"}`;
         await recordAudit({ action: tc.name, detail: msg, result: "block" });
-        messages.push(new ToolMessage({ tool_call_id: tc.id, content: msg }));
+        messages.push({ role: "tool", content: msg, tool_call_id: tc.id });
         continue;
       }
 
@@ -302,15 +347,16 @@ export async function runAgent(
         blockedAny = true;
         steps.push({ tool: tc.name, args: rawArgs, verdict: "block", violated: bind.violation });
         await recordAudit({ action: tc.name, detail: bind.violation, result: "block" });
-        messages.push(new ToolMessage({ tool_call_id: tc.id, content: bind.violation + "，请重新规划。" }));
+        messages.push({ role: "tool", content: bind.violation + "，请重新规划。", tool_call_id: tc.id });
         continue;
       }
       const args = bind.args as { env?: "prod" | "staging"; service?: string; version?: string };
 
       // 2c. 组装执行上下文 → 规则引擎判定（硬门槛）
-      // 配额/幂等真实状态：当日部署记录（跨任务、跨会话真实累积）
+      // 配额/幂等/工单真实状态：当日记录（跨任务、跨会话真实累积）
       let quotaUsed = ctxBase.quotaUsed;
       let hasVersionDeployed = false;
+      let hasTicketReal = ctxBase.hasTicket;
       if (tc.name === "deploy_service") {
         const startOfDay = new Date(now);
         startOfDay.setHours(0, 0, 0, 0);
@@ -331,6 +377,14 @@ export async function runAgent(
           .eq("version", version)
           .gte("created_at", startOfDay.toISOString());
         hasVersionDeployed = (sameVersion ?? 0) > 0;
+        // hasTicket 真实状态：表单预置 OR 当日该服务已有工单记录（模型创建的工单真实生效）
+        const { count: ticketCount } = await db
+          .from("ticket_records")
+          .select("id", { count: "exact", head: true })
+          .eq("service", service)
+          .eq("env", ctxBase.env)
+          .gte("created_at", startOfDay.toISOString());
+        hasTicketReal = ctxBase.hasTicket || (ticketCount ?? 0) > 0;
       }
       const ctx: ExecContext = {
         ...ctxBase,
@@ -338,6 +392,7 @@ export async function runAgent(
         env: ctxBase.env, // 校验环境永远取场景值，与模型声称无关
         quotaUsed,
         hasVersionDeployed,
+        hasTicket: hasTicketReal,
       };
       const decision = evaluateConstraints(constraints, ctx);
       emit({
@@ -364,10 +419,10 @@ export async function runAgent(
             detail: `校验通过并执行：${result}`,
             result: "executed",
           });
-          messages.push(new ToolMessage({ tool_call_id: tc.id, content: result }));
+          messages.push({ role: "tool", content: result, tool_call_id: tc.id });
         } catch (err) {
           const msg = `工具执行失败：${err instanceof Error ? err.message : "未知错误"}`;
-          messages.push(new ToolMessage({ tool_call_id: tc.id, content: msg }));
+          messages.push({ role: "tool", content: msg, tool_call_id: tc.id });
         }
       } else if (decision.verdict === "block") {
         blockedAny = true;
@@ -377,7 +432,7 @@ export async function runAgent(
         const msg = `执行被规则引擎拦截。违规约束：${violated}。请重新规划合规方案。`;
         steps.push({ tool: tc.name, args, verdict: "block", violated });
         await recordAudit({ action: tc.name, detail: msg, result: "block" });
-        messages.push(new ToolMessage({ tool_call_id: tc.id, content: msg }));
+        messages.push({ role: "tool", content: msg, tool_call_id: tc.id });
       } else {
         // conflict → 暂停，P2 接人工裁决面板
         emit({
@@ -404,4 +459,10 @@ export async function runAgent(
   const msg = `达到最大轮数（${MAX_ROUNDS}），任务强制终止。`;
   emit({ type: "done", data: { conclusion: msg, status: "blocked" } });
   return finalize("blocked", msg);
+  } catch (err) {
+    // 任何未捕获异常：执行记录必须落终态，绝不卡在 running（用户实测反馈的僵尸状态）
+    const message = err instanceof Error ? err.message : "未知异常";
+    console.error("[agent] 执行异常:", err);
+    return finalize("blocked", `执行异常：${message}`);
+  }
 }
