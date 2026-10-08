@@ -47,6 +47,7 @@ const SAMPLE_CONTEXT: ExecContext = {
   isEmergency: false,
   hasTicket: true,
   approvedByDirector: false,
+  hasVersionDeployed: false,
 };
 
 // ---------- 表达式语义校验（AST 白名单） ----------

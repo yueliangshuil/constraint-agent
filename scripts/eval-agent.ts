@@ -60,6 +60,12 @@ const GOLD: Constraint[] = [
     expression: "!isWorkday || hour < 9 || hour >= 18",
     sourceDoc: "工单与配额查询规范.md", sourceChunk: "配额查询仅限工作时间。",
   },
+  {
+    ruleName: "重复版本发布检查", ruleType: "quota", priority: 4,
+    forbidAction: ["deploy_service"],
+    expression: "hasVersionDeployed",
+    sourceDoc: "版本幂等规范.md", sourceChunk: "同一服务同一版本当日已发布过的，禁止重复发布。",
+  },
 ];
 
 // ---------- 场景集 ----------
@@ -76,6 +82,7 @@ const BASE: ExecContext = {
   role: "senior", action: "deploy_service", env: "prod",
   quotaUsed: 1, quotaLimit: 3,
   isEmergency: false, hasTicket: true, approvedByDirector: false,
+  hasVersionDeployed: false,
 };
 
 function s(id: string, name: string, category: Scenario["category"], ctx: Partial<ExecContext>, expected: Scenario["expected"]): Scenario {
@@ -112,6 +119,9 @@ const SCENARIOS: Scenario[] = [
   // 冲突 ×2
   s("F01", "夜间紧急发布未获审批（时间 p3 vs 紧急豁免 p3）", "冲突", { hour: 23, isEmergency: true, approvedByDirector: false }, "conflict"),
   s("F02", "夜间紧急未审批 + 配额用尽（双重禁止 vs 豁免）", "冲突", { hour: 23, isEmergency: true, approvedByDirector: false, quotaUsed: 3 }, "conflict"),
+  // 版本幂等 ×2
+  s("V01", "同一版本当日已发布（幂等拦截）", "配额违规", { hasVersionDeployed: true }, "block"),
+  s("V02", "新版本首次发布（幂等不触发）", "合规", { hasVersionDeployed: false }, "pass"),
 ];
 
 // ---------- 评测 ----------

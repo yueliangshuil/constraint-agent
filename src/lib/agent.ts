@@ -96,6 +96,7 @@ export async function runAgent(
     isEmergency: input.isEmergency,
     hasTicket: input.hasTicket,
     approvedByDirector: input.approvedByDirector,
+    hasVersionDeployed: false,
   };
 
   const recordAudit = async (r: { action: string; detail: string; result: string }) => {
@@ -303,27 +304,39 @@ export async function runAgent(
         messages.push(new ToolMessage({ tool_call_id: tc.id, content: bind.violation + "，请重新规划。" }));
         continue;
       }
-      const args = bind.args as { env?: "prod" | "staging"; service?: string };
+      const args = bind.args as { env?: "prod" | "staging"; service?: string; version?: string };
 
       // 2c. 组装执行上下文 → 规则引擎判定（硬门槛）
-      // 配额真实状态：当日该服务部署记录计数 + 表单预置值（跨任务、跨会话真实累积）
+      // 配额/幂等真实状态：当日部署记录（跨任务、跨会话真实累积）
       let quotaUsed = ctxBase.quotaUsed;
+      let hasVersionDeployed = false;
       if (tc.name === "deploy_service") {
         const startOfDay = new Date(now);
         startOfDay.setHours(0, 0, 0, 0);
+        const service = String(args.service ?? "");
+        const version = String(args.version ?? "");
         const { count } = await db
           .from("deploy_records")
           .select("id", { count: "exact", head: true })
-          .eq("service", String(args.service ?? ""))
+          .eq("service", service)
           .eq("env", ctxBase.env)
           .gte("created_at", startOfDay.toISOString());
         quotaUsed += count ?? 0;
+        const { count: sameVersion } = await db
+          .from("deploy_records")
+          .select("id", { count: "exact", head: true })
+          .eq("service", service)
+          .eq("env", ctxBase.env)
+          .eq("version", version)
+          .gte("created_at", startOfDay.toISOString());
+        hasVersionDeployed = (sameVersion ?? 0) > 0;
       }
       const ctx: ExecContext = {
         ...ctxBase,
         action: tc.name as ExecContext["action"],
         env: ctxBase.env, // 校验环境永远取场景值，与模型声称无关
         quotaUsed,
+        hasVersionDeployed,
       };
       const decision = evaluateConstraints(constraints, ctx);
       emit({

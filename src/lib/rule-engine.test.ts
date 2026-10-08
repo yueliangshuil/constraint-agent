@@ -16,6 +16,7 @@ const ctx: ExecContext = {
   isEmergency: false,
   hasTicket: true,
   approvedByDirector: false,
+  hasVersionDeployed: false,
 };
 
 function makeConstraint(partial: Partial<Constraint>): Constraint {

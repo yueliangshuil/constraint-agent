@@ -21,6 +21,8 @@ export interface ExecContext {
   isEmergency: boolean;
   hasTicket: boolean;
   approvedByDirector: boolean;
+  /** 该服务该版本当日是否已发布（版本幂等规则，来自 deploy_records 查询） */
+  hasVersionDeployed: boolean;
 }
 
 /** 表达式白名单：ExecContext 的全部键 */
@@ -36,6 +38,7 @@ export const CONTEXT_KEYS: (keyof ExecContext)[] = [
   "isEmergency",
   "hasTicket",
   "approvedByDirector",
+  "hasVersionDeployed",
 ];
 
 export type RuleType = "time" | "permission" | "quota" | "precondition" | "exception";
