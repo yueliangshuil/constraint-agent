@@ -174,7 +174,14 @@ export default function RulesView({ user }: { user: ClientUser }) {
                       !d.is_latest ? "opacity-40" : ""
                     }`}
                   >
-                    <td className="px-4 py-2.5">{d.filename}</td>
+                    <td className="px-4 py-2.5">
+                      {d.filename}
+                      {d.filename.startsWith("decision-case-") && (
+                        <span className="ml-1.5 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-600 dark:bg-amber-950/40 dark:text-amber-400">
+                          📋 裁决案例
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-2.5">
                       v{d.version}
                       {d.is_latest && (

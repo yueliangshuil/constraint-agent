@@ -58,6 +58,7 @@ export default function ExecuteView({
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<ConflictInfo | null>(null);
   const [deciding, setDeciding] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const ctrlRef = useRef<AbortController | null>(null);
   const execIdRef = useRef<string | null>(null);
 
@@ -132,6 +133,9 @@ export default function ExecuteView({
         throw new Error(data?.error ?? "裁决提交失败");
       }
       setConflict(null);
+      setNotice(
+        `裁决已记录（${decision === "allow" ? "放行" : "拦截"}），裁决案例已回写知识库形成先例`
+      );
       onExecuted();
     } catch (e) {
       setError(e instanceof Error ? e.message : "裁决提交失败");
@@ -289,6 +293,11 @@ export default function ExecuteView({
             <div className="pt-24 text-center text-sm text-zinc-400">
               配置左侧场景后点击「执行任务」，这里将实时展示 Agent 全链路
             </div>
+          )}
+          {notice && (
+            <p className="rounded-lg bg-green-50 px-4 py-2 text-xs text-green-600 dark:bg-green-950/40 dark:text-green-400">
+              ✅ {notice}
+            </p>
           )}
           {events.map((ev) => (
             <TraceCard key={ev.id} event={ev} />

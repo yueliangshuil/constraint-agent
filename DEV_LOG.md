@@ -153,3 +153,13 @@
     - 根因：与 quotaUsed 同源——hasTicket 是表单静态值，模型 create_change_ticket 成功后系统状态未变；
     - 修复：ticket_records 表（迁移 004）真实落库；deploy 校验时 hasTicket = 表单预置 OR 当日该服务存在工单记录。实测：无工单场景模型自主建工单 → 发布放行 → completed（Agent 自主完成合规流程的完整演示）；
     - 另：runAgent 全流程 try/catch 兜底——任何未捕获异常必落终态（用户实测"卡运行中"）；GET /api/executions 增加僵尸清扫（running 超 10 分钟 → cancelled）。
+
+## 2026-10-10 · 裁决闭环补全（用户实测三个体验缺口）
+
+30. **裁决状态流转与可见性**（用户实测：裁决后状态永远 conflict、案例回写看不见）：
+    - ① 状态流转：迁移 005 新增 resolved 状态，decide 成功后 executions.status = resolved（裁决结果在 decisions 表可追溯）；
+    - ② 历史详情抽屉增加「人工裁决记录」区块（裁决结果/裁决人/时间/案例回写说明），点击执行时拉取详情接口合并 decisions；
+    - ③ 规则知识库视图对 decision-case-* 文档加「📋 裁决案例」徽章区分（案例不是规则，不混淆）；
+    - ④ 裁决弹窗成功后提示「裁决已记录，案例已回写知识库形成先例」；
+    - 验证：conflict → 总监裁决 allow → 状态 resolved ✓ 详情含裁决记录 ✓；
+    - 至此裁决完整闭环：冲突暂停 → 人工裁决（仅总监）→ 状态流转 → 案例回写 → 界面全程可见。

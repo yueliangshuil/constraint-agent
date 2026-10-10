@@ -68,6 +68,12 @@ export async function POST(request: Request, { params }: Params) {
     return NextResponse.json({ error: error?.message ?? "裁决记录失败" }, { status: 500 });
   }
 
+  // 状态流转：conflict → resolved（裁决结果存 decisions 表，可追溯）
+  await db
+    .from("executions")
+    .update({ status: "resolved", finished_at: new Date().toISOString() })
+    .eq("id", id);
+
   // 4. 裁决案例回写知识库（经验自适应：同类冲突下次可检索到先例）
   // 失败不阻塞裁决主流程（审计记录失败原因）
   try {

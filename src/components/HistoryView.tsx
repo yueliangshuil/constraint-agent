@@ -19,11 +19,15 @@ const STATUS_LABELS: Record<string, string> = {
   blocked: "🚫 拦截",
   conflict: "⚠️ 冲突待裁决",
   cancelled: "⏹ 已取消",
+  resolved: "✅ 已裁决",
 };
 
 export default function HistoryView({ refreshTick }: { refreshTick: number }) {
   const [executions, setExecutions] = useState<ExecutionRow[]>([]);
   const [selected, setSelected] = useState<ExecutionRow | null>(null);
+  const [decisions, setDecisions] = useState<
+    { decision: string; decided_by: string | null; created_at: string }[]
+  >([]);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -40,6 +44,26 @@ export default function HistoryView({ refreshTick }: { refreshTick: number }) {
   useEffect(() => {
     load();
   }, [load, refreshTick]);
+
+  /** 选中执行：拉取详情（含裁决记录，审计回放完整闭环） */
+  const selectExecution = async (ex: ExecutionRow) => {
+    if (selected?.id === ex.id) {
+      setSelected(null);
+      setDecisions([]);
+      return;
+    }
+    setSelected(ex);
+    setDecisions([]);
+    try {
+      const res = await fetch(`/api/executions/${ex.id}`, { headers: authHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setDecisions(data.decisions ?? []);
+      }
+    } catch {
+      /* 详情拉取失败不阻塞 */
+    }
+  };
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -66,7 +90,7 @@ export default function HistoryView({ refreshTick }: { refreshTick: number }) {
                 {executions.map((ex) => (
                   <tr
                     key={ex.id}
-                    onClick={() => setSelected(selected?.id === ex.id ? null : ex)}
+                    onClick={() => selectExecution(ex)}
                     className={`cursor-pointer border-b border-zinc-100 last:border-0 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800/50 ${
                       selected?.id === ex.id ? "bg-zinc-50 dark:bg-zinc-800/60" : ""
                     }`}
@@ -138,6 +162,27 @@ export default function HistoryView({ refreshTick }: { refreshTick: number }) {
             <div className="mt-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
               <p className="mb-2 text-xs font-medium text-zinc-400">最终结论</p>
               <Markdown content={selected.plan.conclusion} />
+            </div>
+          )}
+          {decisions.length > 0 && (
+            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
+              <p className="mb-2 text-xs font-medium text-amber-600 dark:text-amber-400">
+                ⚖️ 人工裁决记录
+              </p>
+              {decisions.map((d, i) => (
+                <div key={i} className="mb-2 text-xs last:mb-0">
+                  <p className="font-medium">
+                    裁决结果：{d.decision === "allow" ? "✅ 放行" : "🚫 拦截"}
+                    <span className="ml-2 font-normal text-zinc-400">
+                      裁决人：{d.decided_by ?? "未署名"}
+                    </span>
+                  </p>
+                  <p className="text-zinc-400">
+                    时间：{new Date(d.created_at).toLocaleString()}
+                    <span className="ml-2">裁决案例已回写知识库形成先例</span>
+                  </p>
+                </div>
+              ))}
             </div>
           )}
         </div>
