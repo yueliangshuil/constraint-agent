@@ -235,6 +235,33 @@ export async function runAgent(
     return finalize("blocked", msg);
   }
 
+  // ---------- 3.5 核心动作冲突预检（决策点前置） ----------
+  // 任务核心动作本身若处于同优先级冲突（如夜间紧急未审批发布），
+  // 在模型规划前立即暂停转人工裁决——不依赖模型是否走到该工具
+  // （用户实测：模型路径随机导致冲突场景常被绕开、终态落 blocked）。
+  // 注：预检用基线上下文（配额/工单/幂等真实状态在工具调用时另行查询，
+  //     冲突判定所依赖的时间/紧急/审批字段与基线一致）。
+  if (input.expectedAction) {
+    const preCtx: ExecContext = { ...ctxBase, action: input.expectedAction };
+    const preDecision = evaluateConstraints(constraints, preCtx);
+    if (preDecision.verdict === "conflict") {
+      const blockers = preDecision.blockers.map((b) => b.constraint);
+      const exemptions = preDecision.exemptions.map((e) => e.constraint);
+      emit({
+        type: "validation",
+        data: { tool: input.expectedAction, verdict: "conflict", context: { ...preCtx }, violated: [] },
+      });
+      emit({
+        type: "decision_request",
+        data: { blockers, exemptions, tool: input.expectedAction, source: "preflight" },
+      });
+      steps.push({ kind: "conflict", tool: input.expectedAction, blockers, exemptions, source: "preflight" });
+      const msg = "核心动作预检：检测到同优先级约束冲突，任务暂停，等待人工裁决。";
+      await recordAudit({ action: input.expectedAction, detail: msg, result: "conflict" });
+      return finalize("conflict", msg);
+    }
+  }
+
   // ---------- 4. 手写 ReAct 循环 ----------
   // Agent 最小权限：按任务核心动作裁剪工具集（模型物理上拿不到范围外工具）
   const allToolDefs = await toOpenAIToolDefs([deployConn]);
