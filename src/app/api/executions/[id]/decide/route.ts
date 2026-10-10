@@ -74,40 +74,41 @@ export async function POST(request: Request, { params }: Params) {
     .update({ status: "resolved", finished_at: new Date().toISOString() })
     .eq("id", id);
 
-  // 4. 裁决案例回写知识库（经验自适应：同类冲突下次可检索到先例）
+  // 4. 裁决判例回写知识库（按冲突对聚合 + 复用版本化，防同质堆积）
+  // 设计：文件名 = 冲突对签名；同一冲突对反复裁决 → 同名上传 → RAG 版本化
+  // 自动以新版本替换检索（历史版本保留可追溯），知识库每个冲突对仅一条判例。
   // 失败不阻塞裁决主流程（审计记录失败原因）
   try {
     const conflictData = (conflictStep as Record<string, unknown> | undefined) ?? {};
     const blockers = (conflictData.blockers ?? []) as { ruleName: string }[];
     const exemptions = (conflictData.exemptions ?? []) as { ruleName: string }[];
+    const blockerNames = blockers.map((b) => b.ruleName).sort();
+    const exemptNames = exemptions.map((e) => e.ruleName).sort();
+    const signature = `${blockerNames.join("+") || "unknown"}-vs-${exemptNames.join("+") || "unknown"}`;
     const caseDoc = [
-      "# 裁决案例",
-      `- 任务：${execution.task}`,
-      `- 冲突工具：${String(conflictData.tool ?? "未知")}`,
-      `- 禁止侧：${blockers.map((b) => b.ruleName).join("、") || "无"}`,
-      `- 豁免侧：${exemptions.map((e) => e.ruleName).join("、") || "无"}`,
-      `- 裁决结果：${parsed.data.decision === "allow" ? "放行" : "拦截"}`,
-      `- 裁决人：${user.name}`,
-      `- 裁决时间：${new Date().toISOString()}`,
+      "# 裁决判例（人工裁决先例）",
+      `- 冲突对：禁止侧「${blockerNames.join("、") || "无"}」 / 豁免侧「${exemptNames.join("、") || "无"}」`,
+      `- 最近裁决：${parsed.data.decision === "allow" ? "放行" : "拦截"}（裁决人：${user.name}，时间：${new Date().toISOString()}）`,
       "",
-      "本案例作为同类约束冲突的裁决先例，供后续任务参考。",
+      "判例说明：同类约束冲突可参考本判例；系统不自动消解冲突，仍须人工裁决。",
     ].join("\n");
     const formData = new FormData();
     formData.append(
       "file",
-      new File([caseDoc], `decision-case-${Date.now()}.md`, { type: "text/markdown" })
+      new File([caseDoc], `decision-case-${signature}.md`, { type: "text/markdown" })
     );
     const upRes = await fetch(`${getEnv("RAG_API_BASE")}/api/documents`, {
       method: "POST",
       body: formData,
+      headers: { "x-service-token": getEnv("RAG_SERVICE_TOKEN") },
     });
     if (!upRes.ok) {
-      console.warn(`[decide] 案例回写知识库失败: HTTP ${upRes.status}`);
+      console.warn(`[decide] 判例回写知识库失败: HTTP ${upRes.status}`);
     } else {
-      console.log(`[decide] 裁决案例已回写知识库（${parsed.data.decision}）`);
+      console.log(`[decide] 判例已回写/更新（冲突对 ${signature}，${parsed.data.decision}）`);
     }
   } catch (err) {
-    console.warn("[decide] 案例回写异常（不影响裁决主流程）:", err);
+    console.warn("[decide] 判例回写异常（不影响裁决主流程）:", err);
   }
 
   return NextResponse.json({ decision }, { status: 201 });

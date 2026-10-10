@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { authHeaders, type ClientUser } from "@/lib/client-auth";
+import Markdown from "./Markdown";
 
 /** 规则文档（RAG 知识库，经 /rag-api 代理） */
 interface RuleDoc {
@@ -31,7 +32,20 @@ export default function RulesView({ user }: { user: ClientUser }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showTemplate, setShowTemplate] = useState(false);
+  const [viewing, setViewing] = useState<{ filename: string; content: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  /** 查看文档内容（登录即可读；写权限仅 director） */
+  const viewDoc = async (id: string, filename: string) => {
+    try {
+      const res = await fetch(`/api/rules/${id}/content`, { headers: authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "加载失败");
+      setViewing({ filename, content: data.content ?? "" });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "文档内容加载失败");
+    }
+  };
 
   const load = useCallback(async () => {
     try {
@@ -195,6 +209,12 @@ export default function RulesView({ user }: { user: ClientUser }) {
                       {new Date(d.created_at).toLocaleString()}
                     </td>
                     <td className="px-4 py-2.5 text-right">
+                      <button
+                        onClick={() => viewDoc(d.id, d.filename)}
+                        className="mr-2 text-xs text-blue-500 hover:text-blue-600"
+                      >
+                        查看
+                      </button>
                       {canWrite && (
                         <button
                           onClick={() => remove(d.id, d.filename)}
@@ -218,6 +238,26 @@ export default function RulesView({ user }: { user: ClientUser }) {
           </div>
         </div>
       </div>
+
+      {/* 文档内容查看弹窗 */}
+      {viewing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-xl dark:bg-zinc-900">
+            <div className="flex items-center justify-between border-b border-zinc-200 px-6 py-3 dark:border-zinc-800">
+              <h3 className="text-sm font-semibold">{viewing.filename}</h3>
+              <button
+                onClick={() => setViewing(null)}
+                className="text-xs text-zinc-400 hover:text-zinc-600"
+              >
+                关闭
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              <Markdown content={viewing.content} />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
