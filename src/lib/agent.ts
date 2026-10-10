@@ -293,12 +293,27 @@ export async function runAgent(
     const toolCalls = response.toolCalls;
 
     if (toolCalls.length === 0) {
-      const conclusion = response.content ?? "";
-      // 终态判定：核心动作执行成功 → completed；
-      // 核心动作未执行且发生过拦截 → blocked（辅助动作成功 ≠ 任务完成）
+      let conclusion = response.content ?? "";
+      // 终态判定（三规则）：
+      // 1. 核心动作执行成功 → completed
+      // 2. 有任何拦截 → blocked（辅助动作成功 ≠ 任务完成）
+      // 3. 声明了核心动作但从未执行 → blocked（模型空口"完成"不可信——
+      //    用户实测"发布完成但执行 0 次"的漏洞修复）
       const coreDone =
         input.expectedAction !== undefined && executedActions.includes(input.expectedAction);
-      const effectiveStatus = coreDone ? "completed" : blockedAny ? "blocked" : "completed";
+      let effectiveStatus: "completed" | "blocked" = "completed";
+      if (coreDone) {
+        effectiveStatus = "completed";
+      } else if (blockedAny) {
+        effectiveStatus = "blocked";
+      } else if (input.expectedAction !== undefined) {
+        effectiveStatus = "blocked";
+        steps.push({
+          kind: "note",
+          detail: `模型未执行核心动作（${input.expectedAction}）即输出结论，按未完成处理`,
+        });
+        conclusion = `【系统判定】任务核心动作（${input.expectedAction}）未执行，本次任务按未完成处理。\n\n模型原结论：\n${conclusion}`;
+      }
       emit({ type: "done", data: { conclusion, status: effectiveStatus } });
       return finalize(effectiveStatus, conclusion);
     }
