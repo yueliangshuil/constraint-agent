@@ -87,7 +87,7 @@ export default function Home() {
     <AppShell view={view} onViewChange={setView} ragOnline={ragOnline} user={user} onLogout={logout}>
       {view === "execute" && <ExecuteView user={user} onExecuted={() => setRefreshTick((t) => t + 1)} />}
       {view === "rules" && <RulesView user={user} />}
-      {view === "history" && <HistoryView refreshTick={refreshTick} />}
+      {view === "history" && <HistoryView refreshTick={refreshTick} user={user} />}
     </AppShell>
   );
 }

@@ -22,13 +22,54 @@ const STATUS_LABELS: Record<string, string> = {
   resolved: "✅ 已裁决",
 };
 
-export default function HistoryView({ refreshTick }: { refreshTick: number }) {
+export default function HistoryView({
+  refreshTick,
+  user,
+}: {
+  refreshTick: number;
+  user: { role: string; name: string };
+}) {
   const [executions, setExecutions] = useState<ExecutionRow[]>([]);
   const [selected, setSelected] = useState<ExecutionRow | null>(null);
   const [decisions, setDecisions] = useState<
     { decision: string; decided_by: string | null; created_at: string }[]
   >([]);
+  const [deciding, setDeciding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  /** 总监在历史中对冲突记录直接裁决（跨用户裁决入口） */
+  const decide = async (executionId: string, decision: "allow" | "block") => {
+    if (deciding) return;
+    setDeciding(true);
+    try {
+      const res = await fetch(`/api/executions/${executionId}/decide`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ decision }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error ?? "裁决失败");
+      }
+      await load();
+      // 刷新详情
+      const ex = selected;
+      if (ex) {
+        setSelected({ ...ex, status: "resolved" });
+        const dres = await fetch(`/api/executions/${executionId}`, {
+          headers: authHeaders(),
+        });
+        if (dres.ok) {
+          const ddata = await dres.json();
+          setDecisions(ddata.decisions ?? []);
+        }
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "裁决失败");
+    } finally {
+      setDeciding(false);
+    }
+  };
 
   const load = useCallback(async () => {
     try {
@@ -162,6 +203,37 @@ export default function HistoryView({ refreshTick }: { refreshTick: number }) {
             <div className="mt-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
               <p className="mb-2 text-xs font-medium text-zinc-400">最终结论</p>
               <Markdown content={selected.plan.conclusion} />
+            </div>
+          )}
+          {selected.status === "conflict" && (
+            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
+              {user.role === "director" ? (
+                <>
+                  <p className="mb-2 text-xs font-medium text-amber-600 dark:text-amber-400">
+                    ⚖️ 人工裁决（当前身份：{user.name} · 总监）
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => decide(selected.id, "allow")}
+                      disabled={deciding}
+                      className="flex-1 rounded-lg bg-green-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                    >
+                      放行（allow）
+                    </button>
+                    <button
+                      onClick={() => decide(selected.id, "block")}
+                      disabled={deciding}
+                      className="flex-1 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                    >
+                      拦截（block）
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  ⚠️ 该记录存在同优先级约束冲突，仅总监角色可执行人工裁决
+                </p>
+              )}
             </div>
           )}
           {decisions.length > 0 && (
