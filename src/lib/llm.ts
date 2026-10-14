@@ -39,16 +39,22 @@ async function rawChat(body: Record<string, unknown>): Promise<Record<string, un
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${getEnv("DEEPSEEK_API_KEY")}`,
+      // DEV_LOG #36：强制不压缩。Next dev 运行时的 fetch 包装会破坏响应解压
+      // （拿到压缩字节不解压 → res.text() 乱码 → 解析失败），tsx 短命进程无此问题。
+      // LLM JSON 响应压缩收益极小，显式 identity 绕开解压路径，根治此类故障。
+      "Accept-Encoding": "identity",
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
   const text = await res.text();
-  let data: Record<string, unknown> = {};
+  let data: Record<string, unknown>;
   try {
     data = JSON.parse(text) as Record<string, unknown>;
   } catch {
-    /* 非 JSON 响应 */
+    // 显式抛错而非静默吞掉（DEV_LOG #36）：否则响应损坏会被伪装成"模型无输出"，
+    // 表现为零工具调用的伪终态，排障无从下手。
+    throw new Error(`模型 API 响应非 JSON（HTTP ${res.status}）`);
   }
   if (!res.ok) {
     const apiMsg = (data.error as { message?: string } | undefined)?.message;
