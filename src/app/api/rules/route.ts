@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getEnv } from "@/lib/env";
 import { canManageRules, getAuthUser } from "@/lib/auth";
+import { validateRuleDocument } from "@/lib/structurize";
 
 const RAG_BASE = () => getEnv("RAG_API_BASE");
 const SERVICE_TOKEN = () => getEnv("RAG_SERVICE_TOKEN");
@@ -38,6 +39,20 @@ export async function POST(request: Request) {
   }
   try {
     const formData = await request.formData();
+    // 上传前确定性校验（P4）：非法规则禁止入库（与执行期校验同源，不走 LLM 兜底）
+    const file = formData.get("file");
+    if (file instanceof File) {
+      const check = validateRuleDocument(await file.text());
+      if (!check.ok) {
+        return NextResponse.json(
+          {
+            error: `规则校验失败（${check.errors.length} 处），非法规则禁止入库`,
+            details: check.errors,
+          },
+          { status: 400 }
+        );
+      }
+    }
     const res = await fetch(`${RAG_BASE()}/api/documents`, {
       method: "POST",
       headers: { "x-service-token": SERVICE_TOKEN() },

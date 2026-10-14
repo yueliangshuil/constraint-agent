@@ -76,7 +76,12 @@ export default function RulesView({ user }: { user: ClientUser }) {
         body: formData,
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "上传失败");
+      if (!res.ok) {
+        const details = (data.details ?? []) as string[];
+        throw new Error(
+          details.length > 0 ? `${data.error}：${details.join("；")}` : (data.error ?? "上传失败")
+        );
+      }
       if (data.duplicated) setNotice(`《${file.name}》内容未变化，已跳过`);
       else setNotice(`《${file.name}》入库成功（${data.chunkCount} 块，新版已生效）`);
       load();

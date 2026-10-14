@@ -88,6 +88,41 @@ async function generateExpressions(rules: ParsedRule[]): Promise<Map<string, str
 
 // ---------- 主入口 ----------
 
+// ---------- 规则条目构建与校验（上传前校验 / 执行期结构化共用） ----------
+
+/** 构建候选约束条目（Zod 校验前的中间形态） */
+function buildRuleItem(r: ParsedRule, expression: string) {
+  return {
+    ruleName: r.ruleName,
+    ruleType: r.meta.ruleType,
+    priority: Number(r.meta.priority),
+    forbidAction: (r.meta.forbidAction ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    expression,
+    sourceDoc: "（规则文档）",
+    sourceChunk: r.chunk,
+  };
+}
+
+/** 单条规则校验：Zod 结构 → AST 语法 → 变量白名单 → 布尔结果；通过返回约束，否则返回错误 */
+function validateRuleItem(
+  item: ReturnType<typeof buildRuleItem>
+): { ok: true; constraint: Constraint } | { ok: false; error: string } {
+  const zodResult = constraintSchema.safeParse(item);
+  if (!zodResult.success) {
+    return { ok: false, error: zodResult.error.issues[0]?.message ?? "结构校验失败" };
+  }
+  const exprCheck = validateExpression(zodResult.data.expression);
+  if (!exprCheck.ok) {
+    return { ok: false, error: exprCheck.error ?? "表达式非法" };
+  }
+  return { ok: true, constraint: zodResult.data };
+}
+
+// ---------- 主入口 ----------
+
 export async function structurizeRules(ruleText: string): Promise<StructurizeResult> {
   const rules = parseRuleBlocks(ruleText);
   const generated = await generateExpressions(rules);
@@ -96,34 +131,42 @@ export async function structurizeRules(ruleText: string): Promise<StructurizeRes
   const invalid: { ruleName: string; error: string }[] = [];
 
   for (const r of rules) {
-    const expression = r.meta.expression ?? generated.get(r.ruleName);
-    const item = {
-      ruleName: r.ruleName,
-      ruleType: r.meta.ruleType,
-      priority: Number(r.meta.priority),
-      forbidAction: (r.meta.forbidAction ?? "")
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
-      expression: expression ?? "",
-      sourceDoc: "（规则文档）",
-      sourceChunk: r.chunk,
-    };
-    const zodResult = constraintSchema.safeParse(item);
-    if (!zodResult.success) {
-      invalid.push({
-        ruleName: r.ruleName,
-        error: zodResult.error.issues[0]?.message ?? "结构校验失败",
-      });
-      continue;
+    const expression = r.meta.expression ?? generated.get(r.ruleName) ?? "";
+    const res = validateRuleItem(buildRuleItem(r, expression));
+    if (res.ok) {
+      constraints.push(res.constraint);
+    } else {
+      invalid.push({ ruleName: r.ruleName, error: res.error });
     }
-    const exprCheck = validateExpression(zodResult.data.expression);
-    if (!exprCheck.ok) {
-      invalid.push({ ruleName: r.ruleName, error: exprCheck.error ?? "表达式非法" });
-      continue;
-    }
-    constraints.push(zodResult.data);
   }
 
   return { constraints, invalid };
+}
+
+/**
+ * 上传前确定性校验（P4）：非法规则禁止入库。
+ * 与执行期 structurizeRules 同源（同一 Zod/白名单/布尔校验逻辑），但不走 LLM 兜底——
+ * 规则作者必须按模板给出全部元信息字段，缺 expression 直接报错。
+ * 与执行期校验是双层关系：本层拦"作者写错"，执行期兜"召回截断"，后者不可省。
+ */
+export function validateRuleDocument(
+  ruleText: string
+): { ok: true } | { ok: false; errors: string[] } {
+  const rules = parseRuleBlocks(ruleText);
+  if (rules.length === 0) {
+    return { ok: false, errors: ["未识别到规则定义（需包含「## 规则X：规则名称」标题）"] };
+  }
+  const errors: string[] = [];
+  for (const r of rules) {
+    const missing = (["ruleType", "priority", "forbidAction", "expression"] as const).filter(
+      (k) => !r.meta[k]
+    );
+    if (missing.length > 0) {
+      errors.push(`《${r.ruleName}》缺少字段：${missing.join("、")}`);
+      continue;
+    }
+    const res = validateRuleItem(buildRuleItem(r, r.meta.expression as string));
+    if (!res.ok) errors.push(`《${r.ruleName}》${res.error}`);
+  }
+  return errors.length > 0 ? { ok: false, errors } : { ok: true };
 }
