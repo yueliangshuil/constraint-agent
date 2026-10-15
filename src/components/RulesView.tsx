@@ -33,6 +33,7 @@ export default function RulesView({ user }: { user: ClientUser }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [showTemplate, setShowTemplate] = useState(false);
   const [viewing, setViewing] = useState<{ filename: string; content: string } | null>(null);
+  const [viewRaw, setViewRaw] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   /** 查看文档内容（登录即可读；写权限仅 director） */
@@ -42,6 +43,7 @@ export default function RulesView({ user }: { user: ClientUser }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "加载失败");
       setViewing({ filename, content: data.content ?? "" });
+      setViewRaw(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "文档内容加载失败");
     }
@@ -250,15 +252,29 @@ export default function RulesView({ user }: { user: ClientUser }) {
           <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-xl dark:bg-zinc-900">
             <div className="flex items-center justify-between border-b border-zinc-200 px-6 py-3 dark:border-zinc-800">
               <h3 className="text-sm font-semibold">{viewing.filename}</h3>
-              <button
-                onClick={() => setViewing(null)}
-                className="text-xs text-zinc-400 hover:text-zinc-600"
-              >
-                关闭
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setViewRaw((v) => !v)}
+                  className="text-xs text-blue-500 hover:text-blue-600"
+                >
+                  {viewRaw ? "渲染视图" : "原文视图"}
+                </button>
+                <button
+                  onClick={() => setViewing(null)}
+                  className="text-xs text-zinc-400 hover:text-zinc-600"
+                >
+                  关闭
+                </button>
+              </div>
             </div>
             <div className="flex-1 overflow-y-auto p-6">
-              <Markdown content={viewing.content} />
+              {viewRaw ? (
+                <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-zinc-700 dark:text-zinc-300">
+                  {viewing.content}
+                </pre>
+              ) : (
+                <Markdown content={viewing.content} />
+              )}
             </div>
           </div>
         </div>
