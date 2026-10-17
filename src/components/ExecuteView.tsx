@@ -336,25 +336,33 @@ export default function ExecuteView({
                 ))}
               </div>
             </div>
-            <p className="mb-4 text-xs text-zinc-400">
-              裁决人将记录为当前登录身份：{user.name}（{ROLE_LABELS[user.role] ?? user.role}）
-            </p>
-            <div className="flex gap-3">
-              <button
-                onClick={() => decide("allow")}
-                disabled={deciding}
-                className="flex-1 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
-              >
-                放行（allow）
-              </button>
-              <button
-                onClick={() => decide("block")}
-                disabled={deciding}
-                className="flex-1 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
-              >
-                拦截（block）
-              </button>
-            </div>
+            {user.role === "director" ? (
+              <>
+                <p className="mb-4 text-xs text-zinc-400">
+                  裁决人将记录为当前登录身份：{user.name}（{ROLE_LABELS[user.role] ?? user.role}）
+                </p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => decide("allow")}
+                    disabled={deciding}
+                    className="flex-1 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+                  >
+                    放行（allow）
+                  </button>
+                  <button
+                    onClick={() => decide("block")}
+                    disabled={deciding}
+                    className="flex-1 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+                  >
+                    拦截（block）
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-600 dark:bg-amber-950/30 dark:text-amber-400">
+                仅总监角色可执行人工裁决——冲突已记录，请总监在「执行历史」中对该记录裁决。
+              </p>
+            )}
           </div>
         </div>
       )}
