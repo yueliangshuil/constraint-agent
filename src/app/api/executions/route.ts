@@ -9,11 +9,11 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "未登录或会话已过期" }, { status: 401 });
   }
   const db = getSupabaseAdmin();
-  // 僵尸清扫：超过 10 分钟仍处于 running 的异常遗留记录标记为 cancelled
+  // 僵尸清扫：超过 10 分钟仍处于 running 的异常遗留记录标记为 paused（可恢复，P5）
   try {
     await db
       .from("executions")
-      .update({ status: "cancelled", finished_at: new Date().toISOString() })
+      .update({ status: "paused", finished_at: new Date().toISOString() })
       .eq("status", "running")
       .lt("created_at", new Date(Date.now() - 10 * 60 * 1000).toISOString());
   } catch {

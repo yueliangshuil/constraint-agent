@@ -49,9 +49,24 @@ export interface TaskInput {
 }
 
 export interface AgentResult {
-  status: "completed" | "blocked" | "conflict" | "cancelled";
+  status: "completed" | "blocked" | "conflict" | "paused" | "cancelled";
   conclusion: string;
   steps: unknown[];
+}
+
+/**
+ * 中断恢复现场（Checkpoint，P5）：
+ * - executionId 复用原执行记录（不新建，审计连续）
+ * - steps 从持久化步骤继续追加（含已执行动作审计，可推导执行进度）
+ * - executedActions 恢复后继续累计（终态判定不回退）
+ * - historyMessages 为持久化对话现场去掉 system 后的历史（assistant 工具调用 + tool 结果），
+ *   恢复时用"当前召回的最新规则"重建 system——恢复执行遵守当前生效规则，而非旧规则快照
+ */
+export interface ResumeState {
+  executionId: string;
+  steps: Record<string, unknown>[];
+  executedActions: string[];
+  historyMessages: PlainMessage[];
 }
 
 const MAX_ROUNDS = 6;
@@ -78,7 +93,8 @@ const TOOL_SCHEMAS: Record<string, z.ZodTypeAny> = {
 export async function runAgent(
   input: TaskInput,
   emit: (e: AgentEvent) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  resume?: ResumeState
 ): Promise<AgentResult> {
   const now = new Date();
   const hour = input.hourOverride ?? now.getHours();
@@ -103,38 +119,45 @@ export async function runAgent(
     emit({ type: "tool_result", data: { kind: "audit", ...r } });
   };
 
-  const steps: Record<string, unknown>[] = [];
+  const steps: Record<string, unknown>[] = resume?.steps ?? [];
+  const executedActions: string[] = resume?.executedActions ?? [];
+  // 对话现场（Checkpoint 持久化 + 恢复依据）：声明前置（finalize 引用），构建在召回/结构化之后
+  let messages: PlainMessage[] = [];
 
   // 执行记录持久化（审计可回放）
   const db = getSupabaseAdmin();
-  const { data: execRow } = await db
-    .from("executions")
-    .insert({
-      task: input.task,
-      context: {
-        role: input.role,
-        env: input.env,
-        isEmergency: input.isEmergency,
-        hasTicket: input.hasTicket,
-        approvedByDirector: input.approvedByDirector,
-        quotaUsed: input.quotaUsed,
-        hour: hour,
-        weekday: weekday,
-        isWorkday: weekday >= 1 && weekday <= 5,
-      },
-      status: "running",
-      steps: [],
-      user_id: input.userId ?? null,
-      tenant_id: input.tenantId ?? "demo-tenant",
-    })
-    .select()
-    .single();
-  const executionId = execRow?.id as string | undefined;
+  let executionId: string | undefined = resume?.executionId;
+  if (!resume) {
+    const { data: execRow } = await db
+      .from("executions")
+      .insert({
+        task: input.task,
+        context: {
+          role: input.role,
+          env: input.env,
+          isEmergency: input.isEmergency,
+          hasTicket: input.hasTicket,
+          approvedByDirector: input.approvedByDirector,
+          quotaUsed: input.quotaUsed,
+          hour: hour,
+          weekday: weekday,
+          isWorkday: weekday >= 1 && weekday <= 5,
+          expectedAction: input.expectedAction ?? null,
+        },
+        status: "running",
+        steps: [],
+        user_id: input.userId ?? null,
+        tenant_id: input.tenantId ?? "demo-tenant",
+      })
+      .select()
+      .single();
+    executionId = execRow?.id as string | undefined;
+  }
   if (executionId) {
     emit({ type: "execution", data: { id: executionId } });
   }
   const finalize = async (
-    status: "completed" | "blocked" | "conflict" | "cancelled",
+    status: "completed" | "blocked" | "conflict" | "paused" | "cancelled",
     conclusion: string
   ): Promise<AgentResult> => {
     if (executionId) {
@@ -145,6 +168,8 @@ export async function runAgent(
           steps: steps as never,
           finished_at: new Date().toISOString(),
           plan: { conclusion } as never,
+          // Checkpoint：终态时同步对话现场（paused 时尤其关键——恢复执行的依据）
+          messages: messages as never,
         })
         .eq("id", executionId);
     }
@@ -305,16 +330,18 @@ export async function runAgent(
   ].join("\n");
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const messages: PlainMessage[] = [
+  messages = [
     { role: "system", content: systemPrompt },
-    { role: "user", content: input.task },
+    // 恢复模式：历史现场（assistant 工具调用 + tool 结果）已在持久化 messages 中，
+    // 重建 system（用当前召回的最新规则）后直接接续；首次执行：追加用户任务
+    ...(resume ? resume.historyMessages : [{ role: "user" as const, content: input.task }]),
   ];
   let blockedAny = false; // 是否有工具调用被拦截
   const executedActions: string[] = []; // 成功执行的动作清单（终态判定用）
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
     if (signal?.aborted) {
-      return finalize("cancelled", "任务已取消");
+      return finalize("paused", "任务已暂停（可恢复执行）");
     }
     const response = await chatWithTools(messages, scopedToolDefs as ToolDef[]);
     const toolCalls = response.toolCalls;
@@ -495,6 +522,11 @@ export async function runAgent(
         await recordAudit({ action: tc.name, detail: msg, result: "conflict" });
         return finalize("conflict", msg);
       }
+    }
+
+    // Checkpoint：每轮结束持久化对话现场（paused 后恢复执行的依据）
+    if (executionId) {
+      await db.from("executions").update({ messages: messages as never }).eq("id", executionId);
     }
   }
 

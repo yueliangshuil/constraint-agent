@@ -11,10 +11,12 @@ interface ExecutionRow {
   created_at: string;
   steps: Record<string, unknown>[];
   plan: { conclusion?: string } | null;
+  user_id: string | null;
 }
 
 const STATUS_LABELS: Record<string, string> = {
   running: "🔄 运行中",
+  paused: "⏸ 已暂停",
   completed: "✅ 完成",
   blocked: "🚫 拦截",
   conflict: "⚠️ 冲突待裁决",
@@ -27,7 +29,7 @@ export default function HistoryView({
   user,
 }: {
   refreshTick: number;
-  user: { role: string; name: string };
+  user: { id: string; role: string; name: string };
 }) {
   const [executions, setExecutions] = useState<ExecutionRow[]>([]);
   const [selected, setSelected] = useState<ExecutionRow | null>(null);
@@ -35,7 +37,34 @@ export default function HistoryView({
     { decision: string; decided_by: string | null; created_at: string }[]
   >([]);
   const [deciding, setDeciding] = useState(false);
+  const [resumingId, setResumingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  /** 恢复暂停的任务（Checkpoint，P5）：本人或总监；同步接口，完成后刷新列表 */
+  const resume = async (executionId: string) => {
+    if (resumingId) return;
+    setResumingId(executionId);
+    setError(null);
+    try {
+      const res = await fetch(`/api/executions/${executionId}/resume`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "恢复失败");
+      await load();
+      if (data.conclusion) {
+        const ex = executions.find((e) => e.id === executionId);
+        if (ex && selected?.id === executionId) {
+          setSelected({ ...ex, status: data.status, plan: { conclusion: data.conclusion } });
+        }
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "恢复失败");
+    } finally {
+      setResumingId(null);
+    }
+  };
 
   /** 总监在历史中对冲突记录直接裁决（跨用户裁决入口） */
   const decide = async (executionId: string, decision: "allow" | "block") => {
@@ -136,7 +165,22 @@ export default function HistoryView({
                       selected?.id === ex.id ? "bg-zinc-50 dark:bg-zinc-800/60" : ""
                     }`}
                   >
-                    <td className="px-4 py-2.5">{STATUS_LABELS[ex.status] ?? ex.status}</td>
+                    <td className="px-4 py-2.5">
+                      {STATUS_LABELS[ex.status] ?? ex.status}
+                      {(ex.status === "paused" || ex.status === "cancelled") &&
+                        (user.role === "director" || ex.user_id === user.id) && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              resume(ex.id);
+                            }}
+                            disabled={resumingId === ex.id}
+                            className="ml-2 rounded bg-blue-50 px-2 py-0.5 text-[11px] text-blue-600 hover:bg-blue-100 disabled:opacity-40 dark:bg-blue-950/40 dark:text-blue-400"
+                          >
+                            {resumingId === ex.id ? "恢复中…" : "恢复执行"}
+                          </button>
+                        )}
+                    </td>
                     <td className="max-w-md truncate px-4 py-2.5">{ex.task}</td>
                     <td className="px-4 py-2.5 text-zinc-500">{ex.steps?.length ?? 0}</td>
                     <td className="px-4 py-2.5 text-xs text-zinc-400">

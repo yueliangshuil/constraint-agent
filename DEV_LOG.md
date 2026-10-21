@@ -228,3 +228,16 @@
     - 修复：弹窗按角色分支——director 显示裁决按钮与裁决人提示；其他角色显示「仅总监角色可执行人工裁决——冲突已记录，请总监在「执行历史」中对该记录裁决」（历史视图早有跨用户裁决入口，总监可裁决他人触发的冲突）；
     - 附带记录（规则建模 vs 引擎语义的边界）：规则五的自然语言语义是"不受**时间窗口**限制"（定向豁免），但引擎的 exception 是通用豁免语义——与权限同级时打架。正确解法是给 exception 增加"豁免范围"字段（定向豁免），记录为规则引擎演进方向；
     - 教训：**每个用户可见的写操作按钮，渲染条件必须与 API 鉴权一致**——UI 隐藏是体验，API 403 是防线，两者脱节就是这次这种"能看见但不能用"的体验 bug。
+
+## 2026-10-21 · 任务中断恢复（Checkpoint，P5）
+
+39. **中断恢复落地：取消语义升级 paused + 对话现场持久化 + resume 恢复执行**：
+    - 背景：此前用户取消/客户端断开 → 任务 finalize cancelled，模型调用被 abort 后现场全丢，想继续只能重新发起任务——"取消"是死胡同；面试稿中 Checkpoint 曾是"生产化方向"，本次将其做成真实实现；
+    - 迁移 006：executions 加 messages 列（对话现场）；status 枚举加 paused（cancelled 保留向后兼容）；
+    - 取消语义升级：signal.aborted → finalize("paused")（循环开头检查）；僵尸清扫 running 超 10 分钟 → paused（原 cancelled）——所有中断路径都可恢复；
+    - Checkpoint 持久化：每轮循环结束 + finalize 时把 messages（system/assistant 工具调用/tool 结果）写入 executions.messages；
+    - 恢复接口 POST /api/executions/[id]/resume：权限=任务本人或总监（403 实测）；状态=仅 paused/cancelled（409 实测）；从持久化现场重建——steps 从旧步骤继续追加、executedActions 从审计推导（kind=audit && result=executed）、historyMessages 剥离旧 system 后用**当前召回的最新规则**重建 system；
+    - 恢复语义决策：① 规则约束重新召回——恢复执行遵守当前生效规则而非旧规则快照（与"规则变更即时生效"卖点一致）；② 时间事实用服务器当前时刻——时间类约束按恢复时刻判定；③ role 用当前认证用户——恢复人以自己身份执行，审计归属当前用户；④ 重复副作用防护——模型重复提议已执行动作时，幂等/配额规则（真实落库状态）天然拦截；
+    - 实测全链路：无工单发布任务 2 秒断开 → paused（steps:2、msgs:4 现场落库）→ 恢复 → completed；**steps 正确追加（2 旧 + 2 新，审计连续）；模型未重复建工单**——从恢复的上下文知道工单已建，直接发布；
+    - 前端：历史列表 paused 状态显示「⏸ 已暂停」+「恢复执行」按钮（仅本人或总监可见，按钮点击 stopPropagation 不触发行选择）；
+    - 局限如实记录：resume 为同步接口（低频操作，无 SSE 事件流；恢复完成后历史视图刷新可见终态）；恢复次数不限（状态机允许多次 paused→resume 循环）。
