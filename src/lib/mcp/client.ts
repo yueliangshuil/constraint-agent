@@ -1,9 +1,12 @@
 /**
- * MCP 客户端连接器：通过 InMemoryTransport 连接本进程内的 MCP Server，
- * 并把 MCP 工具列表转换为 OpenAI Function Calling 格式供模型调用。
+ * MCP 客户端连接器：
+ * - 开发/演示：InMemoryTransport 连接本进程内的 MCP Server；
+ * - 生产接入（P8）：Streamable HTTP 连接远程 MCP Server（Jira/Jenkins 官方或社区实现），
+ *   上层 Agent 循环零改动——MCP 工具列表转换为 OpenAI Function Calling 格式供模型调用。
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export interface McpConnection {
@@ -18,6 +21,18 @@ export async function connectMcpServer(
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "constraint-agent", version: "1.0.0" });
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  return { client, name };
+}
+
+/**
+ * 连接远程 MCP Server（生产接入，P8）：
+ * 配置 JENKINS_MCP_URL / JIRA_MCP_URL 后，deploy-tools 由远程真实工具提供；
+ * 连接失败由调用方降级本地 mock（演示环境不因配置错误崩溃）。
+ */
+export async function connectRemoteMcpServer(url: string, name: string): Promise<McpConnection> {
+  const client = new Client({ name: "constraint-agent", version: "1.0.0" });
+  const transport = new StreamableHTTPClientTransport(new URL(url));
+  await client.connect(transport);
   return { client, name };
 }
 

@@ -9,9 +9,10 @@ import { chatWithTools, type PlainMessage, type ToolDef } from "./llm";
 import { getSupabaseAdmin } from "./supabase";
 import { evaluateConstraints } from "./rule-engine";
 import { structurizeRules } from "./structurize";
-import { connectMcpServer, callMcpTool, toOpenAIToolDefs } from "./mcp/client";
+import { connectMcpServer, connectRemoteMcpServer, callMcpTool, toOpenAIToolDefs } from "./mcp/client";
 import { createAllServers } from "./mcp/servers";
 import { bindSystemArgs, filterToolsForTask } from "./agent-helpers";
+import { getRemoteMcpConfig } from "./env";
 import type { ExecContext } from "@/types/constraint";
 
 export interface AgentEvent {
@@ -223,8 +224,27 @@ export async function runAgent(
   };
   const servers = createAllServers(recordAudit, onDeploy, onQueryQuota, onTicket);
   const tConnect = Date.now();
+  // 远程工具接入（P8）：配置 JENKINS_MCP_URL/JIRA_MCP_URL 时连接真实 Jira/Jenkins MCP Server，
+  // 连接失败降级本地 mock——演示环境不因配置错误崩溃；工具名不在 TOOL_SCHEMAS 白名单的
+  // 远程工具会被入参校验自然拦截（fail-closed 自动生效）
+  const { jenkinsUrl, jiraUrl } = getRemoteMcpConfig();
+  const deployConnect = (async () => {
+    const remoteUrl = jenkinsUrl ?? jiraUrl;
+    if (remoteUrl) {
+      try {
+        const conn = await connectRemoteMcpServer(remoteUrl, "remote-deploy-tools");
+        console.log(`[mcp] 已接入远程工具 MCP Server: ${remoteUrl}`);
+        return conn;
+      } catch (err) {
+        console.warn(
+          `[mcp] 远程 MCP 连接失败，降级本地 mock: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+    return connectMcpServer(servers.deploy, "deploy-tools");
+  })();
   const [deployConn, ruleConn] = await Promise.all([
-    connectMcpServer(servers.deploy, "deploy-tools"),
+    deployConnect,
     connectMcpServer(servers.ruleSearch, "rule-search"),
   ]);
   markTiming("MCP 连接", tConnect);

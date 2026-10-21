@@ -269,3 +269,12 @@
     - 实测数据示例（合规发布）：MCP 连接 1ms / 规则召回 268ms / 结构化+预检 <1ms / R1 1751ms / query_quota 5ms / R2 1333ms / deploy 18ms / R3 2130ms——**模型推理占绝对大头**，校验层微秒级（与面试追问 13 的数量级判断互相印证）；
     - 定位：这是"执行记录可回放"的增强——审计回放回答"发生了什么"，耗时瀑布回答"时间花在哪"；与线上 Trace（Span 级分布式追踪）的关系如实说：本地单实例够用，跨服务生产化再接 OpenTelemetry；
     - resume 模式下 timing 条目随 steps 追加，恢复执行的两段耗时连续呈现。
+
+## 2026-10-21 · 真实 Jira/Jenkins 接入层（P8）
+
+43. **远程 MCP 接入就绪：配置驱动的 Streamable HTTP 连接 + 失败降级本地 mock**：
+    - 背景：业务工具此前只有进程内 mock（deploy-tools 三工具），"接真实系统只换 handler"停留在口述——本次把接入层做成真实代码路径：配置 URL 即连远程 MCP Server；
+    - 实现：mcp/client.ts 加 connectRemoteMcpServer（StreamableHTTPClientTransport，官方 SDK 生产传输）；env.ts 加 getRemoteMcpConfig（JENKINS_MCP_URL / JIRA_MCP_URL 可选）；agent.ts 连接逻辑——有配置 → 连接远程（成功日志确认），失败 → 降级本地 mock（警告日志），未配置 → mock（现状）；远程与规则检索并行连接；
+    - 安全语义（顺带白得）：远程工具名不在 TOOL_SCHEMAS 白名单 → 入参校验"工具不存在，已拦截"——**fail-closed 对远程工具自动生效**，未适配的远程工具不会被模型调用；
+    - 诚实边界（DEV_LOG 惯例）：① 降级路径与远程连接**未经真实实例验证**——无 Jira/Jenkins 实例，且 env 变更需 dev server 重启；代码路径真实、逻辑由 try/catch 覆盖，实测待有实例后补；② 工具名适配是接入方责任（远程 create_issue 需映射为 create_change_ticket，或更新 TOOL_SCHEMAS 白名单），当前未做映射层；
+    - 与口述稿口径更新：面试讲法从"接真实平台只换 handler"升级为"接入层已实现：配置 URL 即连、失败自动降级、白名单自动防护；未经真实实例验证是如实边界"。
