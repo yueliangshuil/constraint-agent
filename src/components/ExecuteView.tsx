@@ -174,7 +174,7 @@ export default function ExecuteView({
               <option value="deploy_service">发布服务</option>
               <option value="create_change_ticket">创建变更工单</option>
               <option value="query_quota">查询配额</option>
-              <option value="">其他</option>
+              <option value="">自动识别（推荐）</option>
             </select>
           </label>
           <div className="grid grid-cols-2 gap-3 text-xs">

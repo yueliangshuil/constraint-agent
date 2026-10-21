@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { runAgent, type AgentEvent, type TaskInput } from "@/lib/agent";
 import { getAuthUser } from "@/lib/auth";
+import { classifyIntent } from "@/lib/intent";
 import { encodeSSE } from "@/lib/sse";
 
 export const dynamic = "force-dynamic";
@@ -47,10 +48,25 @@ export async function POST(request: Request) {
     );
   }
 
+  // 意图识别（P6）：核心动作未声明时由 LLM 分类识别；
+  // 无法识别（unknown）→ fail-closed 拒绝执行——任务类型不明时不进入 Agent 循环
+  let expectedAction = parsed.data.expectedAction;
+  if (!expectedAction) {
+    const intent = await classifyIntent(parsed.data.task);
+    if (intent === "unknown") {
+      return Response.json(
+        { error: "无法识别任务类型（与业务动作无关），按 fail-closed 拒绝执行" },
+        { status: 400 }
+      );
+    }
+    expectedAction = intent;
+  }
+
   // 系统绑定：总监身份即审批人（表单不再接受审批自述，防止伪造审批状态）
   const approvedByDirector = user.role === "director" ? true : parsed.data.approvedByDirector;
   const input = {
     ...parsed.data,
+    expectedAction,
     approvedByDirector,
     role: user.role,
     userId: user.id,
