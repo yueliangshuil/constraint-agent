@@ -119,6 +119,11 @@ export async function runAgent(
     emit({ type: "tool_result", data: { kind: "audit", ...r } });
   };
 
+  /** 阶段耗时埋点（P7 Trace）：kind=timing 条目落 steps，前端渲染耗时瀑布 */
+  const markTiming = (stage: string, startMs: number) => {
+    steps.push({ kind: "timing", stage, duration_ms: Date.now() - startMs });
+  };
+
   const steps: Record<string, unknown>[] = resume?.steps ?? [];
   const executedActions: string[] = resume?.executedActions ?? [];
   // 对话现场（Checkpoint 持久化 + 恢复依据）：声明前置（finalize 引用），构建在召回/结构化之后
@@ -217,13 +222,16 @@ export async function runAgent(
     });
   };
   const servers = createAllServers(recordAudit, onDeploy, onQueryQuota, onTicket);
+  const tConnect = Date.now();
   const [deployConn, ruleConn] = await Promise.all([
     connectMcpServer(servers.deploy, "deploy-tools"),
     connectMcpServer(servers.ruleSearch, "rule-search"),
   ]);
+  markTiming("MCP 连接", tConnect);
 
   // ---------- 2. 约束召回（规则检索 MCP → RAG 检索服务） ----------
   emit({ type: "stage", data: { stage: "retrieving" } });
+  const tRetrieve = Date.now();
   let ruleText = "";
   let maxSimilarity = 0;
   try {
@@ -246,10 +254,13 @@ export async function runAgent(
     emit({ type: "done", data: { conclusion: msg, status: "blocked" } });
     return finalize("blocked", msg);
   }
+  markTiming("规则召回", tRetrieve);
 
   // ---------- 3. 约束结构化（LLM + Zod + 白名单） ----------
   emit({ type: "stage", data: { stage: "structuring" } });
+  const tStruct = Date.now();
   const { constraints, invalid } = await structurizeRules(ruleText);
+  markTiming("约束结构化", tStruct);
   emit({
     type: "constraints",
     data: { constraints, invalid },
@@ -267,8 +278,10 @@ export async function runAgent(
   // 注：预检用基线上下文（配额/工单/幂等真实状态在工具调用时另行查询，
   //     冲突判定所依赖的时间/紧急/审批字段与基线一致）。
   if (input.expectedAction) {
+    const tPreflight = Date.now();
     const preCtx: ExecContext = { ...ctxBase, action: input.expectedAction };
     const preDecision = evaluateConstraints(constraints, preCtx);
+    markTiming("冲突预检", tPreflight);
     if (preDecision.verdict === "conflict") {
       const blockers = preDecision.blockers.map((b) => b.constraint);
       const exemptions = preDecision.exemptions.map((e) => e.constraint);
@@ -343,7 +356,9 @@ export async function runAgent(
     if (signal?.aborted) {
       return finalize("paused", "任务已暂停（可恢复执行）");
     }
+    const tRound = Date.now();
     const response = await chatWithTools(messages, scopedToolDefs as ToolDef[]);
+    markTiming(`模型推理 R${round + 1}`, tRound);
     const toolCalls = response.toolCalls;
 
     if (toolCalls.length === 0) {
@@ -385,6 +400,7 @@ export async function runAgent(
 
     for (const tc of toolCalls) {
       // 模型工具参数是 JSON 字符串，解析失败按入参非法处理
+      const tTool = Date.now();
       let tcArgs: Record<string, unknown> = {};
       try {
         tcArgs = JSON.parse(tc.arguments) as Record<string, unknown>;
@@ -399,6 +415,7 @@ export async function runAgent(
         const msg = `工具 ${tc.name} 不存在，已拦截`;
         await recordAudit({ action: tc.name, detail: msg, result: "block" });
         messages.push({ role: "tool", content: msg, tool_call_id: tc.id });
+        markTiming(`工具 ${tc.name}`, tTool);
         continue;
       }
       const parsedArgs = schema.safeParse(tcArgs);
@@ -406,6 +423,7 @@ export async function runAgent(
         const msg = `工具 ${tc.name} 入参非法：${parsedArgs.error.issues[0]?.message ?? "格式错误"}`;
         await recordAudit({ action: tc.name, detail: msg, result: "block" });
         messages.push({ role: "tool", content: msg, tool_call_id: tc.id });
+        markTiming(`工具 ${tc.name}`, tTool);
         continue;
       }
 
@@ -417,6 +435,7 @@ export async function runAgent(
         steps.push({ tool: tc.name, args: rawArgs, verdict: "block", violated: bind.violation });
         await recordAudit({ action: tc.name, detail: bind.violation, result: "block" });
         messages.push({ role: "tool", content: bind.violation + "，请重新规划。", tool_call_id: tc.id });
+        markTiming(`工具 ${tc.name}`, tTool);
         continue;
       }
       const args = bind.args as { env?: "prod" | "staging"; service?: string; version?: string };
@@ -520,8 +539,10 @@ export async function runAgent(
           exemptions: decision.exemptions.map((e) => e.constraint),
         });
         await recordAudit({ action: tc.name, detail: msg, result: "conflict" });
+        markTiming(`工具 ${tc.name}`, tTool);
         return finalize("conflict", msg);
       }
+      markTiming(`工具 ${tc.name}`, tTool);
     }
 
     // Checkpoint：每轮结束持久化对话现场（paused 后恢复执行的依据）

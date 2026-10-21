@@ -212,10 +212,42 @@ export default function HistoryView({
           </div>
           <p className="mb-1 text-xs text-zinc-400">{new Date(selected.created_at).toLocaleString()}</p>
           <p className="mb-4 text-sm">{selected.task}</p>
+          {/* 耗时瀑布（P7 Trace）：timing 条目按最大耗时归一化渲染横向条 */}
+          {(() => {
+            const timings = (selected.steps ?? []).filter((s) => s.kind === "timing");
+            if (timings.length === 0) return null;
+            const maxMs = Math.max(...timings.map((t) => Number(t.duration_ms) || 1), 1);
+            return (
+              <div className="mb-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+                <p className="mb-2 text-xs font-medium text-zinc-400">⏱ 阶段耗时（Trace）</p>
+                <div className="space-y-1.5">
+                  {timings.map((t, i) => {
+                    const ms = Number(t.duration_ms) || 0;
+                    return (
+                      <div key={i} className="flex items-center gap-2 text-[11px]">
+                        <span className="w-24 shrink-0 truncate text-zinc-500">{String(t.stage)}</span>
+                        <div className="h-2.5 flex-1 overflow-hidden rounded bg-zinc-100 dark:bg-zinc-800">
+                          <div
+                            className="h-full rounded bg-blue-400/70"
+                            style={{ width: `${Math.max((ms / maxMs) * 100, 2)}%` }}
+                          />
+                        </div>
+                        <span className="w-16 shrink-0 text-right text-zinc-400">{ms}ms</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
           <div className="space-y-2">
             {(selected.steps ?? []).map((s, i) => (
               <div key={i} className="rounded-lg bg-zinc-50 p-2.5 text-xs dark:bg-zinc-800/60">
-                {s.kind === "audit" ? (
+                {s.kind === "timing" ? (
+                  <p className="text-zinc-400">
+                    ⏱ {String(s.stage)}：{String(s.duration_ms)}ms
+                  </p>
+                ) : s.kind === "audit" ? (
                   <p className="text-zinc-500">
                     📝 审计[{String(s.result)}] {String(s.action)}：{String(s.detail).slice(0, 100)}
                   </p>
