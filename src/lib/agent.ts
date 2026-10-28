@@ -116,16 +116,20 @@ export async function runAgent(
   };
 
   const recordAudit = async (r: { action: string; detail: string; result: string }) => {
-    steps.push({ kind: "audit", ...r });
+    pushStep({ kind: "audit", ...r });
     emit({ type: "tool_result", data: { kind: "audit", ...r } });
   };
 
   /** 阶段耗时埋点（P7 Trace）：kind=timing 条目落 steps，前端渲染耗时瀑布 */
   const markTiming = (stage: string, startMs: number) => {
-    steps.push({ kind: "timing", stage, duration_ms: Date.now() - startMs });
+    pushStep({ kind: "timing", stage, duration_ms: Date.now() - startMs });
   };
 
   const steps: Record<string, unknown>[] = resume?.steps ?? [];
+  /** 步骤落库统一入口：每条带时间戳（审计回放"谁、何时、哪一步"，DEV_LOG #44） */
+  const pushStep = (entry: Record<string, unknown>) => {
+    steps.push({ ...entry, timestamp: new Date().toISOString() });
+  };
   const executedActions: string[] = resume?.executedActions ?? [];
   // 对话现场（Checkpoint 持久化 + 恢复依据）：声明前置（finalize 引用），构建在召回/结构化之后
   let messages: PlainMessage[] = [];
@@ -313,7 +317,7 @@ export async function runAgent(
         type: "decision_request",
         data: { blockers, exemptions, tool: input.expectedAction, source: "preflight" },
       });
-      steps.push({ kind: "conflict", tool: input.expectedAction, blockers, exemptions, source: "preflight" });
+      pushStep({ kind: "conflict", tool: input.expectedAction, blockers, exemptions, source: "preflight" });
       const msg = "核心动作预检：检测到同优先级约束冲突，任务暂停，等待人工裁决。";
       await recordAudit({ action: input.expectedAction, detail: msg, result: "conflict" });
       return finalize("conflict", msg);
@@ -397,7 +401,7 @@ export async function runAgent(
         effectiveStatus = "blocked";
       } else if (input.expectedAction !== undefined) {
         effectiveStatus = "blocked";
-        steps.push({
+        pushStep({
           kind: "note",
           detail: `模型未执行核心动作（${input.expectedAction}）即输出结论，按未完成处理`,
         });
@@ -452,7 +456,7 @@ export async function runAgent(
       const bind = bindSystemArgs(tc.name, rawArgs as Record<string, unknown>, ctxBase.env);
       if (bind.violation) {
         blockedAny = true;
-        steps.push({ tool: tc.name, args: rawArgs, verdict: "block", violated: bind.violation });
+        pushStep({ tool: tc.name, args: rawArgs, verdict: "block", violated: bind.violation });
         await recordAudit({ action: tc.name, detail: bind.violation, result: "block" });
         messages.push({ role: "tool", content: bind.violation + "，请重新规划。", tool_call_id: tc.id });
         markTiming(`工具 ${tc.name}`, tTool);
@@ -521,7 +525,7 @@ export async function runAgent(
         try {
           const result = await callMcpTool(deployConn, tc.name, args);
           executedActions.push(tc.name);
-          steps.push({ tool: tc.name, args, verdict: "pass" });
+          pushStep({ tool: tc.name, args, verdict: "pass" });
           await recordAudit({
             action: tc.name,
             detail: `校验通过并执行：${result}`,
@@ -538,7 +542,7 @@ export async function runAgent(
           .map((v) => `「${v.constraint.ruleName}」（${v.constraint.expression}）`)
           .join("；");
         const msg = `执行被规则引擎拦截。违规约束：${violated}。请重新规划合规方案。`;
-        steps.push({ tool: tc.name, args, verdict: "block", violated });
+        pushStep({ tool: tc.name, args, verdict: "block", violated });
         await recordAudit({ action: tc.name, detail: msg, result: "block" });
         messages.push({ role: "tool", content: msg, tool_call_id: tc.id });
       } else {
@@ -552,7 +556,7 @@ export async function runAgent(
           },
         });
         const msg = "检测到同优先级约束冲突，任务暂停，等待人工裁决。";
-        steps.push({
+        pushStep({
           kind: "conflict",
           tool: tc.name,
           blockers: decision.blockers.map((b) => b.constraint),

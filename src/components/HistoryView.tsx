@@ -9,9 +9,12 @@ interface ExecutionRow {
   task: string;
   status: string;
   created_at: string;
+  finished_at: string | null;
   steps: Record<string, unknown>[];
   plan: { conclusion?: string } | null;
   user_id: string | null;
+  /** 关联查询的执行人（DEV_LOG #44） */
+  users: { name: string } | null;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -152,6 +155,7 @@ export default function HistoryView({
                 <tr>
                   <th className="px-4 py-2.5 font-medium">状态</th>
                   <th className="px-4 py-2.5 font-medium">任务</th>
+                  <th className="px-4 py-2.5 font-medium">执行人</th>
                   <th className="px-4 py-2.5 font-medium">步骤数</th>
                   <th className="px-4 py-2.5 font-medium">执行时间</th>
                 </tr>
@@ -182,6 +186,7 @@ export default function HistoryView({
                         )}
                     </td>
                     <td className="max-w-md truncate px-4 py-2.5">{ex.task}</td>
+                    <td className="px-4 py-2.5 text-zinc-500">{ex.users?.name ?? "未知"}</td>
                     <td className="px-4 py-2.5 text-zinc-500">{ex.steps?.length ?? 0}</td>
                     <td className="px-4 py-2.5 text-xs text-zinc-400">
                       {new Date(ex.created_at).toLocaleString()}
@@ -210,7 +215,15 @@ export default function HistoryView({
               关闭
             </button>
           </div>
-          <p className="mb-1 text-xs text-zinc-400">{new Date(selected.created_at).toLocaleString()}</p>
+          <p className="mb-1 text-xs text-zinc-400">
+            {new Date(selected.created_at).toLocaleString()}
+            {selected.finished_at && (
+              <span> ~ {new Date(selected.finished_at).toLocaleTimeString()}</span>
+            )}
+          </p>
+          <p className="mb-1 text-xs text-zinc-400">
+            执行人：{selected.users?.name ?? "未知"}（{STATUS_LABELS[selected.status] ?? selected.status}）
+          </p>
           <p className="mb-4 text-sm">{selected.task}</p>
           {/* 耗时瀑布（P7 Trace）：timing 条目按最大耗时归一化渲染横向条 */}
           {(() => {
@@ -243,6 +256,11 @@ export default function HistoryView({
           <div className="space-y-2">
             {(selected.steps ?? []).map((s, i) => (
               <div key={i} className="rounded-lg bg-zinc-50 p-2.5 text-xs dark:bg-zinc-800/60">
+                {typeof s.timestamp === "string" && (
+                  <p className="mb-1 text-[10px] tabular-nums text-zinc-400">
+                    ⏰ {new Date(s.timestamp).toLocaleTimeString()}
+                  </p>
+                )}
                 {s.kind === "timing" ? (
                   <p className="text-zinc-400">
                     ⏱ {String(s.stage)}：{String(s.duration_ms)}ms

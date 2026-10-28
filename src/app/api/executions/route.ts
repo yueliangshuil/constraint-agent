@@ -21,7 +21,8 @@ export async function GET(request: Request) {
   }
   let query = db
     .from("executions")
-    .select("*")
+    // 关联 users 取执行人姓名（审计回放"谁在何时执行"，DEV_LOG #44）
+    .select("*, users(name)")
     .eq("tenant_id", user.tenantId)
     .order("created_at", { ascending: false })
     .limit(50);
