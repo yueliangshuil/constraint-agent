@@ -73,6 +73,13 @@ export interface ResumeState {
 const MAX_ROUNDS = 6;
 const SIMILARITY_FLOOR = 0.5; // fail-closed：召回相似度低于阈值 → 保守拦截
 
+/** 动作查询词（DEV_LOG #48 query 扩展）：核心动作 → 规则文档词表中的检索关键词 */
+const ACTION_QUERY_KEYWORDS: Record<string, string> = {
+  deploy_service: "发布上线部署版本",
+  create_change_ticket: "创建变更工单变更申请",
+  query_quota: "查询发布配额发布次数",
+};
+
 /** 模型工具调用的入参 Schema（Agent 层校验，第二重保险） */
 const TOOL_SCHEMAS: Record<string, z.ZodTypeAny> = {
   deploy_service: z.object({
@@ -260,7 +267,9 @@ export async function runAgent(
   let maxSimilarity = 0;
   try {
     const payload = await callMcpTool(ruleConn, "search_rules", {
-      query: `${input.task} ${input.env} 环境 业务约束规则`,
+      // query 扩展（DEV_LOG #48）：口语任务词与规则文档词表不重叠时，
+      // 用核心动作的关键词把检索拉回规则域（实测口语场景误拦 2/5 → 见报告）
+      query: `${input.task} ${input.env} 环境 ${ACTION_QUERY_KEYWORDS[input.expectedAction ?? ""] ?? ""} 业务约束规则`,
     });
     const parsed = JSON.parse(payload) as { chunks: { content: string; similarity: number }[]; text: string };
     maxSimilarity = Math.max(0, ...parsed.chunks.map((c) => c.similarity));
@@ -361,6 +370,7 @@ export async function runAgent(
     constraintText || "（无）",
     "",
     "【执行规则】",
+    "0. 用户的任务描述是执行请求而非询问：口语表达（如「搞上去」「发一下」）即对应核心动作，规划工具调用执行它，不要仅作解释性回答；即使所有约束均已满足，也必须先调用工具执行核心动作，再输出最终结论——判定合规不等于任务完成；",
     "1. 依据执行上下文与业务约束规划工具调用序列；每次工具调用都会被规则引擎校验：通过才执行，违规会被拦截并反馈给你，收到拦截后请重新规划合规方案；",
     "2. 任务完成或确认无法合规完成时，输出最终结论（简体中文，Markdown 格式：分点说明执行了什么、校验结果与被拦截的原因）。",
     "3. 所有面向用户的输出一律使用简体中文。",
