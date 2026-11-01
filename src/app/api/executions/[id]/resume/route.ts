@@ -69,13 +69,18 @@ export async function POST(request: Request, { params }: Params) {
 
   const input: TaskInput = {
     task: execution.task,
-    // 恢复人以当前认证身份执行（审计归属当前用户）；时间用服务器当前时刻
+    // 恢复人以当前认证身份执行（审计归属当前用户）
     role: user.role,
     env: (context.env as "prod" | "staging") ?? "prod",
     isEmergency: Boolean(context.isEmergency),
     hasTicket: Boolean(context.hasTicket),
     approvedByDirector: user.role === "director" ? true : Boolean(context.approvedByDirector),
     quotaUsed: Number(context.quotaUsed ?? 0),
+    // 时间语境继承原任务（DEV_LOG #47）：恢复执行沿用发起时的模拟时间——
+    // 同一任务的判定语境不应在恢复时跳变（实测：发起周三 14 点、恢复用服务器周六，
+    // 时间类规则判定结果翻转，模型被无端拦截）
+    hourOverride: typeof context.hour === "number" ? context.hour : undefined,
+    weekdayOverride: typeof context.weekday === "number" ? context.weekday : undefined,
     expectedAction: (expectedAction as TaskInput["expectedAction"]) ?? undefined,
     userId: user.id,
     tenantId: user.tenantId,
